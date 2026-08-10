@@ -1,0 +1,901 @@
+[
+  {
+    "op": "note",
+    "args": {
+      "target_id": "operator:me",
+      "text": "ACME ROBOTICS \u2014 a wholly fictional engagement. Every host, address, credential and finding is invented. Addresses use RFC 5737 TEST-NET-2 (198.51.100.0/24) and RFC 1918 10.99.0.0/16. Built to exercise every reckon flow: all three alarms, a four-deep chain, a verification queue where one edge gates two objectives, a refuted branch, a superseded finding, a blown failure budget, and cross-engagement recall against examples/demo-prior.json."
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "host:portal01",
+      "kind": "host",
+      "label": "portal01",
+      "epistemic": "verified",
+      "confidence": "A",
+      "props": {
+        "zone": "dmz",
+        "ip": "198.51.100.10",
+        "role": "gunicorn http customer portal",
+        "ports": "80,443,8080"
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:op-portal",
+      "src": "operator:me",
+      "dst": "host:portal01",
+      "rel": "grants-access-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 1,
+        "privilege": "app shell as www"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "artifact:app-config",
+      "kind": "artifact",
+      "label": "portal app config",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:portal-config",
+      "src": "host:portal01",
+      "dst": "artifact:app-config",
+      "rel": "contains",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "set_exploitation",
+    "args": {
+      "id": "artifact:app-config",
+      "state": "acquired"
+    }
+  },
+  {
+    "op": "examine",
+    "args": {
+      "id": "artifact:app-config",
+      "outcome": "directory bind account + broker hostname"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "cred:svc_web",
+      "kind": "cred",
+      "label": "svc_web : D3mo-P@ss-01",
+      "epistemic": "verified",
+      "confidence": "A",
+      "source": "portal app config"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:hold-svcweb",
+      "src": "operator:me",
+      "dst": "cred:svc_web",
+      "rel": "holds",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "set_exploitation",
+    "args": {
+      "id": "cred:svc_web",
+      "state": "examined"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "technique:sqli-config",
+      "kind": "technique",
+      "label": "SQLi -> app config -> service cred",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:portal-sqli",
+      "src": "host:portal01",
+      "dst": "technique:sqli-config",
+      "rel": "applies-technique",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "obj:foothold",
+      "kind": "objective",
+      "label": "T1 leaked web cred -> internal service",
+      "status": "achieved",
+      "props": {
+        "requires": [
+          {
+            "target": "host:portal01",
+            "min_rank": 1
+          }
+        ]
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "host:broker01",
+      "kind": "host",
+      "label": "broker01 (dual-homed)",
+      "epistemic": "verified",
+      "confidence": "A",
+      "props": {
+        "zone": "dmz",
+        "ip": "198.51.100.30",
+        "role": "message broker, second NIC on corp",
+        "ports": "8161,61616"
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:portal-broker",
+      "src": "host:portal01",
+      "dst": "host:broker01",
+      "rel": "escalates-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 2,
+        "privilege": "shell as broker"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "artifact:broker-config",
+      "kind": "artifact",
+      "label": "broker auth config",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:broker-config",
+      "src": "host:broker01",
+      "dst": "artifact:broker-config",
+      "rel": "contains",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "set_exploitation",
+    "args": {
+      "id": "artifact:broker-config",
+      "state": "acquired"
+    }
+  },
+  {
+    "op": "examine",
+    "args": {
+      "id": "artifact:broker-config",
+      "outcome": "automation account, reused domain-wide"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "cred:svc_queue",
+      "kind": "cred",
+      "label": "svc_queue : D3mo-P@ss-02",
+      "epistemic": "verified",
+      "confidence": "A",
+      "source": "broker auth config"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:hold-svcqueue",
+      "src": "operator:me",
+      "dst": "cred:svc_queue",
+      "rel": "holds",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "set_exploitation",
+    "args": {
+      "id": "cred:svc_queue",
+      "state": "examined"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "obj:pivot",
+      "kind": "objective",
+      "label": "T2 pivot into the corp segment",
+      "status": "open",
+      "props": {
+        "requires": [
+          {
+            "target": "host:broker01",
+            "min_rank": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "op": "note",
+    "args": {
+      "target_id": "obj:pivot",
+      "text": "Shell obtained; the graded requirement is a demonstrated route into 10.99.10.0/24, which we have but have not evidenced."
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "host:dc01",
+      "kind": "host",
+      "label": "dc01",
+      "epistemic": "verified",
+      "confidence": "A",
+      "props": {
+        "zone": "corp",
+        "ip": "10.99.10.5",
+        "role": "domain controller ldap smb",
+        "ports": "88,389,445,5985"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "host:share01",
+      "kind": "host",
+      "label": "share01",
+      "epistemic": "hypothesized",
+      "confidence": "C",
+      "props": {
+        "zone": "corp",
+        "ip": "10.99.10.15",
+        "role": "smb file shares",
+        "ports": "445"
+      }
+    }
+  },
+  {
+    "op": "note",
+    "args": {
+      "target_id": "host:share01",
+      "text": "Identity inferred from a DNS name only \u2014 never confirmed against the host itself."
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "host:desk04",
+      "kind": "host",
+      "label": "desk04 (analyst)",
+      "epistemic": "verified",
+      "props": {
+        "zone": "corp",
+        "ip": "10.99.10.40",
+        "role": "workstation winrm",
+        "ports": "5985"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "host:lab07",
+      "kind": "host",
+      "label": "lab07 (researcher)",
+      "epistemic": "verified",
+      "props": {
+        "zone": "research",
+        "ip": "10.99.20.7",
+        "role": "workstation winrm",
+        "ports": "5985"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "host:modelsrv01",
+      "kind": "host",
+      "label": "modelsrv01",
+      "epistemic": "hypothesized",
+      "confidence": "D",
+      "props": {
+        "zone": "research",
+        "ip": "10.99.20.30",
+        "role": "model training host",
+        "ports": "22"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "service:assist-chat",
+      "kind": "service",
+      "label": "assist01 /api/chat",
+      "epistemic": "verified",
+      "confidence": "A",
+      "props": {
+        "zone": "corp",
+        "ip": "10.99.10.60",
+        "role": "http llm assistant, basic auth",
+        "ports": "443"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "host:printer02",
+      "kind": "host",
+      "label": "printer02",
+      "epistemic": "verified",
+      "props": {
+        "zone": "corp",
+        "ip": "10.99.10.90",
+        "role": "printer web panel",
+        "ports": "80,9100"
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:broker-dc01",
+      "src": "host:broker01",
+      "dst": "host:dc01",
+      "rel": "grants-access-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 1,
+        "privilege": "network reach via pivot"
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:broker-fs",
+      "src": "host:broker01",
+      "dst": "host:share01",
+      "rel": "grants-access-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 1
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:broker-desk04",
+      "src": "host:broker01",
+      "dst": "host:desk04",
+      "rel": "grants-access-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 1
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:broker-assist",
+      "src": "host:broker01",
+      "dst": "service:assist-chat",
+      "rel": "grants-access-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 1
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:broker-lab07",
+      "src": "host:broker01",
+      "dst": "host:lab07",
+      "rel": "grants-access-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 1
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:broker-printer",
+      "src": "host:broker01",
+      "dst": "host:printer02",
+      "rel": "grants-access-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 1
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "artifact:backup-share",
+      "kind": "artifact",
+      "label": "fileserver backups share",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "artifact:hr-share",
+      "kind": "artifact",
+      "label": "fileserver hr-private share",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:fs-backup",
+      "src": "host:share01",
+      "dst": "artifact:backup-share",
+      "rel": "contains",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:fs-hr",
+      "src": "host:share01",
+      "dst": "artifact:hr-share",
+      "rel": "contains",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "note",
+    "args": {
+      "target_id": "artifact:backup-share",
+      "text": "Denied to the service accounts early on. Never re-tried after domain admin landed."
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "technique:adcs-esc1",
+      "kind": "technique",
+      "label": "ADCS ESC1 -> certificate as any principal -> PKINIT",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:dc-esc1",
+      "src": "host:dc01",
+      "dst": "technique:adcs-esc1",
+      "rel": "applies-technique",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "cred:domain-admin",
+      "kind": "cred",
+      "label": "Administrator NT hash",
+      "epistemic": "verified",
+      "confidence": "A",
+      "source": "ADCS ESC1"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:hold-da",
+      "src": "operator:me",
+      "dst": "cred:domain-admin",
+      "rel": "holds",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "set_exploitation",
+    "args": {
+      "id": "cred:domain-admin",
+      "state": "examined"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:da-dc01",
+      "src": "cred:domain-admin",
+      "dst": "host:dc01",
+      "rel": "escalates-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 3,
+        "privilege": "domain admin"
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:da-desk04",
+      "src": "cred:domain-admin",
+      "dst": "host:desk04",
+      "rel": "escalates-to",
+      "epistemic": "verified",
+      "props": {
+        "rank": 3,
+        "privilege": "local admin via PtH"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "obj:da",
+      "kind": "objective",
+      "label": "T5 domain admin on dc01",
+      "status": "achieved",
+      "props": {
+        "crown_jewel": true,
+        "requires": [
+          {
+            "target": "host:dc01",
+            "min_rank": 3
+          }
+        ]
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "artifact:browser-store",
+      "kind": "artifact",
+      "label": "analyst browser credential store",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:desk04-store",
+      "src": "host:desk04",
+      "dst": "artifact:browser-store",
+      "rel": "contains",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "set_exploitation",
+    "args": {
+      "id": "artifact:browser-store",
+      "state": "acquired"
+    }
+  },
+  {
+    "op": "examine",
+    "args": {
+      "id": "artifact:browser-store",
+      "outcome": "three saved logins recovered, one for the assistant"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "technique:browser-cred",
+      "kind": "technique",
+      "label": "App-bound browser store decrypt via the elevation service",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:desk04-tech",
+      "src": "host:desk04",
+      "dst": "technique:browser-cred",
+      "rel": "applies-technique",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "cred:analyst",
+      "kind": "cred",
+      "label": "assist-svc : D3mo-P@ss-03",
+      "epistemic": "verified",
+      "confidence": "A",
+      "source": "analyst browser store"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:hold-analyst",
+      "src": "operator:me",
+      "dst": "cred:analyst",
+      "rel": "holds",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "set_exploitation",
+    "args": {
+      "id": "cred:analyst",
+      "state": "acquired"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:analyst-assist",
+      "src": "cred:analyst",
+      "dst": "service:assist-chat",
+      "rel": "grants-access-to",
+      "epistemic": "verified",
+      "confidence": "A",
+      "props": {
+        "rank": 2,
+        "privilege": "authenticated, 200 on /api/chat"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "obj:ai-abuse",
+      "kind": "objective",
+      "label": "T7 assistant tool-abuse -> surface restricted records",
+      "status": "open",
+      "props": {
+        "crown_jewel": true,
+        "requires": [
+          {
+            "target": "service:assist-chat",
+            "min_rank": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "op": "note",
+    "args": {
+      "target_id": "obj:ai-abuse",
+      "text": "Endpoint answers with the recovered credential and exposes three tools. Never actually driven \u2014 the highest-value un-run step in the engagement."
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "cred:j.rivera-asrep",
+      "kind": "cred",
+      "label": "j.rivera AS-REP hash",
+      "epistemic": "verified",
+      "confidence": "B",
+      "source": "AS-REP roast"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:hold-asrep",
+      "src": "operator:me",
+      "dst": "cred:j.rivera-asrep",
+      "rel": "holds",
+      "epistemic": "verified"
+    }
+  },
+  {
+    "op": "set_exploitation",
+    "args": {
+      "id": "cred:j.rivera-asrep",
+      "state": "acquired"
+    }
+  },
+  {
+    "op": "note",
+    "args": {
+      "target_id": "cred:j.rivera-asrep",
+      "text": "Will not crack locally \u2014 no GPU, wordlist only."
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:asrep-lab07",
+      "src": "cred:j.rivera-asrep",
+      "dst": "host:lab07",
+      "rel": "grants-access-to",
+      "epistemic": "hypothesized",
+      "confidence": "C",
+      "props": {
+        "rank": 2,
+        "privilege": "assumed WinRM if cracked"
+      }
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:lab07-modelsrv",
+      "src": "host:lab07",
+      "dst": "host:modelsrv01",
+      "rel": "escalates-to",
+      "epistemic": "hypothesized",
+      "confidence": "D",
+      "props": {
+        "rank": 3,
+        "privilege": "assumed ssh key reuse"
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "obj:lateral-research",
+      "kind": "objective",
+      "label": "T8 authenticate to the researcher workstation",
+      "status": "open",
+      "props": {
+        "requires": [
+          {
+            "target": "host:lab07",
+            "min_rank": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "obj:model-exfil",
+      "kind": "objective",
+      "label": "T9 exfiltrate the training corpus",
+      "status": "open",
+      "props": {
+        "crown_jewel": true,
+        "requires": [
+          {
+            "target": "host:modelsrv01",
+            "min_rank": 3
+          }
+        ]
+      }
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "finding:printer-creds",
+      "kind": "finding",
+      "label": "printer panel leaks LDAP bind credentials",
+      "epistemic": "refuted",
+      "confidence": "D"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:printer-finding",
+      "src": "host:printer02",
+      "dst": "finding:printer-creds",
+      "rel": "evidenced-by",
+      "epistemic": "refuted"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "finding:printer-locked",
+      "kind": "finding",
+      "label": "printer panel is credential-locked, no LDAP configured",
+      "epistemic": "verified",
+      "confidence": "A"
+    }
+  },
+  {
+    "op": "supersede",
+    "args": {
+      "old_id": "finding:printer-creds",
+      "new_id": "finding:printer-locked",
+      "reason": "panel read directly \u2014 no LDAP config present"
+    }
+  },
+  {
+    "op": "attempt",
+    "args": {
+      "id": "e:asrep-lab07",
+      "outcome": "failed",
+      "note": "wordlist exhausted against the AS-REP hash"
+    }
+  },
+  {
+    "op": "attempt",
+    "args": {
+      "id": "e:asrep-lab07",
+      "outcome": "failed",
+      "note": "rule-mangled wordlist, no result"
+    }
+  },
+  {
+    "op": "add_node",
+    "args": {
+      "id": "assumption:key-reuse",
+      "kind": "assumption",
+      "label": "research hosts share an SSH key with lab07",
+      "epistemic": "hypothesized",
+      "confidence": "D",
+      "source": "naming convention only"
+    }
+  },
+  {
+    "op": "add_edge",
+    "args": {
+      "id": "e:modelsrv-depends",
+      "src": "host:modelsrv01",
+      "dst": "assumption:key-reuse",
+      "rel": "depends-on",
+      "epistemic": "hypothesized"
+    }
+  },
+  {
+    "op": "decide",
+    "args": {
+      "chose": "drive the assistant objective next",
+      "reason": "satisfiable with the credential already in hand; the research branch rests on an uncracked hash",
+      "rejected": [
+        "crack the AS-REP hash",
+        "evidence the pivot for T2"
+      ],
+      "about": "obj:ai-abuse"
+    }
+  },
+  {
+    "op": "decide",
+    "args": {
+      "chose": "stop cracking j.rivera locally",
+      "reason": "two failed attempts, no GPU available \u2014 re-scope rather than retry",
+      "rejected": [
+        "third wordlist run"
+      ]
+    }
+  }
+]

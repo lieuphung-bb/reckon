@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reckon"
+version = "0.4.0"
+description = "Dead reckoning for an engagement: where you stand, what you can already win, and what you never looked at"
+requires-python = ">=3.10"
+dependencies = []
+license = {text = "MIT"}
+
+[project.scripts]
+reckon = "reckon.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["reckon*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

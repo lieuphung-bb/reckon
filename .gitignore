@@ -1,0 +1,7 @@
+engagements/
+__pycache__/
+*.pyc
+out/
+build/
+dist/
+*.egg-info/

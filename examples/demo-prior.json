@@ -1,0 +1,19 @@
+[
+  {"op": "note", "args": {"target_id": "operator:me", "text": "Prior fictional engagement. Exists so `recall` has history to answer from — recall deliberately excludes the current engagement, so a single fixture could never demonstrate it."}},
+
+  {"op": "add_node", "args": {"id": "host:shop01", "kind": "host", "label": "shop01", "epistemic": "verified", "props": {"zone": "dmz", "ip": "198.51.100.20", "role": "nginx http storefront", "ports": "80,443"}}},
+  {"op": "add_node", "args": {"id": "technique:sqli-config", "kind": "technique", "label": "SQLi -> app config -> service cred", "epistemic": "verified", "props": {"atlas": "—", "note": "union-based on a search parameter"}}},
+  {"op": "add_edge", "args": {"id": "e:shop-sqli", "src": "host:shop01", "dst": "technique:sqli-config", "rel": "applies-technique", "epistemic": "verified"}},
+
+  {"op": "add_node", "args": {"id": "host:mail01", "kind": "host", "label": "mail01", "epistemic": "verified", "props": {"zone": "corp", "ip": "10.99.10.25", "role": "smb ldap mail relay", "ports": "445,389"}}},
+  {"op": "add_node", "args": {"id": "technique:adcs-esc1", "kind": "technique", "label": "ADCS ESC1 -> certificate as any principal -> PKINIT", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:mail-esc1", "src": "host:mail01", "dst": "technique:adcs-esc1", "rel": "applies-technique", "epistemic": "verified"}},
+
+  {"op": "add_node", "args": {"id": "host:desk09", "kind": "host", "label": "desk09", "epistemic": "verified", "props": {"zone": "corp", "ip": "10.99.10.40", "role": "workstation winrm", "ports": "5985"}}},
+  {"op": "add_node", "args": {"id": "technique:browser-cred", "kind": "technique", "label": "App-bound browser store decrypt via the elevation service", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:desk-browser", "src": "host:desk09", "dst": "technique:browser-cred", "rel": "applies-technique", "epistemic": "verified"}},
+
+  {"op": "add_node", "args": {"id": "technique:queue-rce", "kind": "technique", "label": "Deserialisation in a message broker config load", "epistemic": "refuted"}},
+  {"op": "add_edge", "args": {"id": "e:mail-queue", "src": "host:mail01", "dst": "technique:queue-rce", "rel": "applies-technique", "epistemic": "refuted"}},
+  {"op": "note", "args": {"target_id": "technique:queue-rce", "text": "Refuted here — the broker was patched. Recall must not suggest it."}}
+]
