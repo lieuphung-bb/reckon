@@ -5,3 +5,11 @@ out/
 build/
 dist/
 *.egg-info/
+
+# mla / Meetless workspace binding and generated rule mirror. Both are created by
+# `mla activate` and regenerated from its backend, so they are derived state, not
+# source. Keeping them out avoids tying a published repo to a third-party service
+# and stops a `git add -A` from committing machine-generated paraphrases of this
+# README as if they were project docs.
+.meetless.json
+.meetless/
