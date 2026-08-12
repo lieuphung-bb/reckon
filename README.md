@@ -8,7 +8,7 @@ reach.
 *Dead reckoning*: fixing your position from a known point plus a log of the moves
 you made. That is exactly what this does.
 
-Stdlib Python 3 · no dependencies · 105 tests · v0.4.0
+Stdlib Python 3 · no dependencies · 122 tests · v0.4.0
 
 ## Why
 
@@ -199,6 +199,7 @@ reckon retro      # at close: what you left on the table
 | `reckon delta` | what changed since you last looked |
 | `reckon decide` | record a choice, what it ruled out, and why |
 | `reckon attempt` · `budget` | 2-strike failure budget, computed |
+| `reckon change` · `changes` · `cleaned` | what you altered on the target: the RoE cleanup list, and what a successor must not re-do |
 | `reckon recall` · `suggest` | techniques that worked on nodes like this before |
 | `reckon retro` | capability→realization latency, time-to-mine, calibration |
 | `reckon import <dir>` | parse a markdown workspace into events |
@@ -219,7 +220,7 @@ every 5s and pick up each regeneration.
 cannot contradict each other; keeping six hand-written files in sync is the
 failure this replaces.
 
-**MCP** — `reckon mcp` serves 13 tools over stdio JSON-RPC, stdlib only, no SDK.
+**MCP** — `reckon mcp` serves 14 tools over stdio JSON-RPC, stdlib only, no SDK.
 This is the landing surface for an agent's output: without it, everything the
 agent produces reaches the graph only if a human retypes it. Tool errors return
 inside the result, so the agent sees `unknown node id: host:TYPO` and corrects

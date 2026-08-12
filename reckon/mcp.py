@@ -82,6 +82,14 @@ TOOLS = [
            "rejected": {"type": "array", "items": _S}, "about": _S}, ["chose"]),
     _tool("note", "Free narrative attached to a node.", {"id": _S, "text": _S},
           ["id", "text"]),
+    _tool("change", "Record a modification you made to the TARGET (a file dropped, "
+                    "an account added). Two readers depend on it: whoever resumes "
+                    "this engagement and must not re-do it, and whoever runs the "
+                    "cleanup at close. Give a revert hint whenever one exists.",
+          {"target": {**_S, "description": "node id where the change landed"},
+           "what": _S, "revert_hint": _S,
+           "reversible": {"type": "boolean"}, "agent": _S},
+          ["target", "what"]),
 ]
 
 
@@ -135,6 +143,11 @@ def dispatch(tool: str, args: dict):
                           args.get("rejected"), args.get("about"))
     if tool == "note":
         return api.note(name, args["id"], args["text"])
+    if tool == "change":
+        return api.change(name, args["target"], args["what"],
+                          reversible=bool(args.get("reversible", True)),
+                          revert_hint=args.get("revert_hint", ""),
+                          agent=args.get("agent"))
     raise api.ValidationError(f"unknown tool: {tool}")
 
 

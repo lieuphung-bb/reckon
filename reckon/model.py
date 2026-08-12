@@ -97,6 +97,25 @@ class Edge:
 
 
 @dataclass
+class Change:
+    """A modification we made to the TARGET, not a thing the target has.
+
+    Not a node, for the same reason a decision is not: nothing routes through it,
+    so putting it in the access graph would pollute reachability. It answers two
+    questions at once - what a successor must not re-do, and what is owed at close
+    under the rules of engagement.
+    """
+    id: str
+    target: str
+    what: str
+    reversible: bool = True
+    revert_hint: str = ""
+    cleaned: bool = False
+    by: str | None = None
+    seq: int = 0
+
+
+@dataclass
 class Graph:
     nodes: dict = field(default_factory=dict)
     edges: dict = field(default_factory=dict)
@@ -106,6 +125,7 @@ class Graph:
     # node - putting it in the access graph would pollute reachability with
     # something nothing can route through.
     decisions: list = field(default_factory=list)
+    changes: list = field(default_factory=list)
 
     # -- accessors -------------------------------------------------------------
     def out_edges(self, node_id: str) -> list:
@@ -127,6 +147,7 @@ class Graph:
             "nodes": {k: asdict(v) for k, v in self.nodes.items()},
             "edges": {k: asdict(v) for k, v in self.edges.items()},
             "decisions": self.decisions,
+            "changes": [asdict(c) for c in self.changes],
         }
 
 
@@ -228,6 +249,21 @@ def _apply(g: Graph, ev: dict) -> None:
             if not hasattr(tgt, "attempts") or tgt.attempts is None:
                 tgt.attempts = []
             tgt.attempts.append(rec)
+
+    elif op == "change":
+        # The id is derived from seq rather than carried in the event: seq is
+        # assigned under the store lock, so an id minted before the write would
+        # race between the CLI and the MCP server.
+        g.changes.append(Change(
+            id=f"chg:{seq}", target=a.get("target", ""), what=a.get("what", ""),
+            reversible=bool(a.get("reversible", True)),
+            revert_hint=a.get("revert_hint", ""),
+            by=ev.get("by"), seq=seq))
+
+    elif op == "cleaned":
+        for c in g.changes:
+            if c.id == a.get("change_id"):
+                c.cleaned = True
 
     elif op == "note":
         n = g.nodes.get(a.get("target_id"))

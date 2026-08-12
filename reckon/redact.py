@@ -120,4 +120,11 @@ def redact_graph(g):
         e.id = redact_text(e.id)
         e.props = redact_obj(e.props)
     g.edges = {e.id: e for e in g.edges.values()}
+
+    # A revert hint is a command, and a command that undoes an account creation
+    # tends to carry the credential that created it.
+    for c in g.changes:
+        c.target = remap.get(c.target, c.target)
+        c.what = redact_text(c.what)
+        c.revert_hint = redact_text(c.revert_hint)
     return g

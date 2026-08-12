@@ -12,6 +12,8 @@ found no such node, and the operator believed a fact had been recorded. A tool
 whose whole purpose is catching what you missed must never quietly miss.
 """
 
+from dataclasses import asdict
+
 from . import store
 from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, OPERATOR_ID, fold)
 from .reference import make_reference
@@ -34,6 +36,17 @@ def _one_of(value, allowed, what):
         raise ValidationError(
             f"invalid {what}: {value!r}. Expected one of {', '.join(allowed)}")
     return value
+
+
+def _agent(agent=None):
+    """Event authorship: explicit argument wins, else $RECKON_AGENT, else none.
+
+    The env var is what lets a harness stamp every write from a session without
+    each call site passing it, which is the only way authorship survives an agent
+    that forgets.
+    """
+    import os
+    return agent or os.environ.get("RECKON_AGENT") or None
 
 
 def _require_nodes(name, ids):
@@ -189,6 +202,43 @@ def decide(name, chose, reason="", rejected=None, about=None):
     return chose
 
 
+# --- the change ledger --------------------------------------------------------
+
+def change(name, target, what, reversible=True, revert_hint="", agent=None) -> str:
+    """Record a modification made to the TARGET.
+
+    Two readers, one record: a successor who must not re-do it, and whoever runs
+    the cleanup at close. Both lists are kept by hand in real workspaces today,
+    which is exactly why they drift apart.
+    """
+    if not what or not str(what).strip():
+        raise ValidationError("change requires what was done")
+    _require_nodes(name, [target])
+    ev = store.append(name, "change", {
+        "target": target, "what": what, "reversible": bool(reversible),
+        "revert_hint": revert_hint}, by=_agent(agent))
+    return f"chg:{ev['seq']}"
+
+
+def mark_cleaned(name, change_id, agent=None) -> None:
+    g = store.load(name)
+    if change_id not in {c.id for c in g.changes}:
+        outstanding = sorted(c.id for c in g.changes if not c.cleaned)[:8]
+        raise ValidationError(
+            f"unknown change id: {change_id}. "
+            + (f"Outstanding: {', '.join(outstanding)}" if outstanding
+               else "Nothing is outstanding."))
+    store.append(name, "cleaned", {"change_id": change_id}, by=_agent(agent))
+
+
+def changes(name, outstanding_only=True) -> list:
+    """The RoE cleanup list. Outstanding only by default — a cleaned change is
+    history, and history is not a task."""
+    g = store.load(name)
+    return [asdict(c) for c in g.changes
+            if not (outstanding_only and c.cleaned)]
+
+
 def attempt(name, target_id, outcome="failed", note=""):
     """Record an attempt against a node or edge. Feeds the failure budget."""
     _one_of(outcome, ATTEMPT_OUTCOMES, "attempt outcome")
@@ -285,6 +335,7 @@ def status(name) -> dict:
         "verification_queue": verification_queue(g),
         "budget_blown": budget(g),
         "decisions": g.decisions[-5:],
+        "changes": [asdict(c) for c in g.changes if not c.cleaned],
     }
 
 

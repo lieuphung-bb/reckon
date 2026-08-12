@@ -17,7 +17,7 @@ from . import __version__, api, retro, ingest, store
 from .model import KINDS, RELS, EPISTEMIC, EXPLOITATION
 from .queries import (frontier, unrealized, unmined, stale, why,
                       verification_queue, budget)
-from .redact import redact_graph
+from .redact import redact_graph, redact_obj
 from .render.board import board
 from .render.html import console as html_console
 from .render.views import render_all, VIEWS
@@ -207,6 +207,37 @@ def cmd_attempt(args):
         print(f"⚠ BUDGET BLOWN — {blown[0]['advice']}", file=sys.stderr)
 
 
+def cmd_change(args):
+    print(api.change(args.name, args.target, args.what,
+                     reversible=not args.irreversible,
+                     revert_hint=args.revert or "", agent=args.agent))
+
+
+def _changes_text(rows):
+    if not rows:
+        return "no outstanding target changes"
+    out = []
+    for c in rows:
+        mark = "✓ " if c["cleaned"] else "  "
+        tail = f"  ↩ {c['revert_hint']}" if c["revert_hint"] else ""
+        if not c["reversible"]:
+            tail += "  IRREVERSIBLE"
+        out.append(f"{mark}{c['id']}  {c['target']}  {c['what']}{tail}")
+    return "\n".join(out)
+
+
+def cmd_changes(args):
+    rows = api.changes(args.name, outstanding_only=not args.all)
+    if getattr(args, "redact", False):
+        rows = redact_obj(rows)
+    _emit(args, rows, _changes_text(rows))
+
+
+def cmd_cleaned(args):
+    api.mark_cleaned(args.name, args.change_id, agent=args.agent)
+    print(f"{args.change_id} cleaned")
+
+
 def cmd_budget(args):
     b = budget(_graph(args), limit=args.limit)
     _emit(args, b, "\n".join(f"⚠ {x['label']} ({x['id']}) — {x['advice']}"
@@ -383,6 +414,21 @@ def build_parser():
     s.add_argument("--limit", type=int, default=2)
     s.add_argument("--json", action="store_true")
     s.add_argument("--redact", action="store_true"); s.set_defaults(func=cmd_budget)
+
+    s = sub.add_parser("change", help="record a modification made to the target")
+    s.add_argument("target"); s.add_argument("what")
+    s.add_argument("--revert", help="the command or step that undoes it")
+    s.add_argument("--irreversible", action="store_true")
+    s.add_argument("--agent"); s.set_defaults(func=cmd_change)
+
+    s = sub.add_parser("changes", help="outstanding RoE cleanup")
+    s.add_argument("--all", action="store_true", help="include cleaned entries")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--redact", action="store_true"); s.set_defaults(func=cmd_changes)
+
+    s = sub.add_parser("cleaned", help="mark a recorded change reverted")
+    s.add_argument("change_id"); s.add_argument("--agent")
+    s.set_defaults(func=cmd_cleaned)
 
     s = sub.add_parser("delta", help="what changed since you last looked")
     s.add_argument("--since", type=int); s.add_argument("--json", action="store_true")
