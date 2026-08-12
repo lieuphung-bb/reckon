@@ -98,7 +98,7 @@ reckon ls
 
 ## Try it
 
-Two synthetic engagements ship with the repo. `demo-prior` exists so `recall` has
+Three synthetic engagements ship with the repo. `demo-prior` exists so `recall` has
 history to answer from — recall excludes the current engagement, so one fixture
 could never demonstrate it.
 
@@ -113,6 +113,17 @@ reckon -e demo recall host:portal01   # a technique that worked on a node like t
 
 `examples/demo.json` is a wholly fictional engagement built to fire every
 mechanism at once — something a real engagement never obliges you by doing.
+
+`examples/demo-ai.json` is the same exercise against an LLM application — a RAG
+backend, a tool gateway, and an agent runner instead of a domain. It turns on one
+refutation: `assumption:tenant-scope` ("retrieval is tenant-scoped") dies mid-log,
+and killing it is what makes the crown objective reachable.
+
+```sh
+reckon -e demo-ai new demo-ai && reckon -e demo-ai apply examples/demo-ai.json
+reckon -e demo-ai why objective:xtenant-read   # the four-edge chain the refutation opened
+reckon -e demo-ai queue                        # one untested edge gating two objectives
+```
 
 ```
 examples/*.json           input fixtures, tracked
