@@ -12,9 +12,11 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
 
 from . import __version__, api, retro, ingest, store
-from .model import KINDS, RELS, EPISTEMIC, EXPLOITATION
+from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, STEP_STATUS,
+                    BLOCKED_REASONS, BLOCKED_IMPLICATION)
 from .queries import (frontier, unrealized, unmined, stale, why,
                       verification_queue, budget)
 from .redact import redact_graph, redact_obj
@@ -205,6 +207,81 @@ def cmd_attempt(args):
     print(f"{args.id}: {args.outcome}")
     if blown:
         print(f"⚠ BUDGET BLOWN — {blown[0]['advice']}", file=sys.stderr)
+
+
+def cmd_plan_add(args):
+    pid = api.plan_add(args.name, args.objective, args.title, steps=args.step,
+                       plan_id=args.id, supersedes=args.supersedes,
+                       agent=args.agent)
+    print(pid)
+
+
+def cmd_plan_supersede(args):
+    api.plan_supersede(args.name, args.old, args.new, reason=args.reason)
+    print(f"{args.old} superseded by {args.new}")
+
+
+def _step_line(s, cursor_id=None):
+    mark = {"done": "✓", "running": "▶", "blocked": "✗",
+            "skipped": "–", "pending": "·"}.get(s.status, "·")
+    here = " ←" if s.id == cursor_id else ""
+    out = f"  {mark} {s.ordinal}. {s.text}{here}"
+    if s.status == "blocked":
+        out += (f"\n      blocked ({s.blocked_reason}) — "
+                f"{BLOCKED_IMPLICATION.get(s.blocked_reason, '')}")
+    if s.note:
+        out += f"\n      note: {s.note}"
+    if s.produced:
+        out += f"\n      produced: {', '.join(s.produced)}"
+    elif s.status == "done" and not s.note:
+        out += "\n      ⚠ done with nothing produced and no note — output may be stranded"
+    if s.command:
+        out += f"\n      $ {s.command}"
+    return out
+
+
+def cmd_plan_show(args):
+    g = _graph(args)
+    p = g.plans.get(args.plan)
+    if not p:
+        raise api.ValidationError(f"unknown plan id: {args.plan}")
+    cur = p.cursor
+    head = f"{p.id}  {p.title}  ({p.objective})"
+    if p.superseded_by:
+        head += f"  — SUPERSEDED by {p.superseded_by}"
+    text = "\n".join([head] + [_step_line(s, cur.id if cur else None)
+                               for s in p.steps])
+    _emit(args, asdict(p), text)
+
+
+def cmd_plans(args):
+    g = _graph(args)
+    plans = list(g.plans.values()) if args.all else g.active_plans()
+    rows = []
+    for p in plans:
+        cur = p.cursor
+        done = sum(1 for s in p.steps if s.status == "done")
+        where = (f"{cur.ordinal}/{len(p.steps)} {cur.text[:40]} [{cur.status}]"
+                 if cur else f"{done}/{len(p.steps)} complete")
+        flag = "  SUPERSEDED" if p.superseded_by else ""
+        rows.append(f"{p.id}  {p.title[:34]:<34}  {where}{flag}")
+    _emit(args, [asdict(p) for p in plans], "\n".join(rows) or "no plans")
+
+
+def cmd_step(args):
+    api.step_state(args.name, args.plan, args.step, args.status,
+                   note=args.note or "", blocked_reason=args.reason,
+                   produced=args.produced, agent=args.agent)
+    line = f"{args.plan} step {args.step}: {args.status}"
+    if args.reason:
+        line += (f" ({args.reason}) — "
+                 f"{BLOCKED_IMPLICATION.get(args.reason, '')}")
+    print(line)
+
+
+def cmd_step_add(args):
+    print(api.step_add(args.name, args.plan, args.text, command=args.command,
+                       ordinal=args.ordinal, agent=args.agent))
 
 
 def cmd_change(args):
@@ -414,6 +491,46 @@ def build_parser():
     s.add_argument("--limit", type=int, default=2)
     s.add_argument("--json", action="store_true")
     s.add_argument("--redact", action="store_true"); s.set_defaults(func=cmd_budget)
+
+    # `plan` nests, because `plan add` and `plan supersede` are different verbs
+    # on one noun; steps stay flat since `step done <plan> 2` is the hot path.
+    s = sub.add_parser("plan", help="an ordered path to an objective")
+    psub = s.add_subparsers(dest="plan_cmd", required=True)
+
+    q = psub.add_parser("add", help="attach a plan to an objective")
+    q.add_argument("objective"); q.add_argument("title")
+    q.add_argument("--step", action="append", help="repeatable, in order")
+    q.add_argument("--id", help="explicit plan id")
+    q.add_argument("--supersedes", help="the active plan this replaces")
+    q.add_argument("--agent"); q.set_defaults(func=cmd_plan_add)
+
+    q = psub.add_parser("show", help="the steps and where the cursor is")
+    q.add_argument("plan"); q.add_argument("--json", action="store_true")
+    q.add_argument("--redact", action="store_true")
+    q.set_defaults(func=cmd_plan_show)
+
+    q = psub.add_parser("supersede", help="replace a plan, keeping it readable")
+    q.add_argument("old"); q.add_argument("new")
+    q.add_argument("--reason", default=""); q.set_defaults(func=cmd_plan_supersede)
+
+    q = psub.add_parser("step", help="append a step to an existing plan")
+    q.add_argument("plan"); q.add_argument("text")
+    q.add_argument("--command"); q.add_argument("--ordinal", type=int)
+    q.add_argument("--agent"); q.set_defaults(func=cmd_step_add)
+
+    s = sub.add_parser("plans", help="active plans and where each stands")
+    s.add_argument("--all", action="store_true", help="include superseded")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--redact", action="store_true"); s.set_defaults(func=cmd_plans)
+
+    s = sub.add_parser("step", help="move a step: pending|running|done|blocked|skipped")
+    s.add_argument("status", choices=STEP_STATUS)
+    s.add_argument("plan"); s.add_argument("step", help="ordinal or step id")
+    s.add_argument("--note", default="")
+    s.add_argument("--reason", choices=BLOCKED_REASONS,
+                   help="required when blocking; refused otherwise")
+    s.add_argument("--produced", nargs="*", help="node ids this step created")
+    s.add_argument("--agent"); s.set_defaults(func=cmd_step)
 
     s = sub.add_parser("change", help="record a modification made to the target")
     s.add_argument("target"); s.add_argument("what")

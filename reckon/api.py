@@ -15,7 +15,8 @@ whose whole purpose is catching what you missed must never quietly miss.
 from dataclasses import asdict
 
 from . import store
-from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, OPERATOR_ID, fold)
+from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, OPERATOR_ID,
+                    STEP_STATUS, BLOCKED_REASONS, fold)
 from .reference import make_reference
 from .queries import (frontier, unrealized, unmined, stale, coverage, why,
                       verification_queue, reach, budget, delta as _delta,
@@ -200,6 +201,171 @@ def decide(name, chose, reason="", rejected=None, about=None):
         "chose": chose, "reason": reason,
         "rejected": list(rejected or []), "about": about})
     return chose
+
+
+# --- plans and steps ----------------------------------------------------------
+
+class AmbiguousHandoff(ValidationError):
+    """Several plans are live and none was named. Never resolved by picking one:
+    an arbitrary resume point sends a successor to the wrong objective."""
+
+
+def _plan(g, plan_id):
+    p = g.plans.get(plan_id)
+    if not p:
+        known = sorted(x.id for x in g.active_plans())[:8]
+        raise ValidationError(
+            f"unknown plan id: {plan_id}."
+            + (f" Active: {', '.join(known)}" if known else " No plans yet."))
+    return p
+
+
+def _resolve_step(plan, step_id) -> str:
+    """Accept an ordinal or a full step id — the CLI addresses steps by ordinal
+    ('step done <plan> 2') and the API by id, and resolving here keeps the CLI
+    thin rather than teaching it the id format."""
+    s = str(step_id)
+    if s.isdigit():
+        for st in plan.steps:
+            if st.ordinal == int(s):
+                return st.id
+        raise ValidationError(
+            f"{plan.id} has no step {s} — it has {len(plan.steps)}")
+    if any(st.id == s for st in plan.steps):
+        return s
+    raise ValidationError(f"unknown step id: {s} in {plan.id}")
+
+
+def plan_add(name, objective, title, steps=None, plan_id=None, supersedes=None,
+             agent=None) -> str:
+    """Attach an ordered plan to an objective.
+
+    One ACTIVE plan per objective. A second is refused rather than silently
+    allowed, because two live plans on one objective means two successors
+    executing different procedures against the same target. Pass `supersedes` to
+    replace the incumbent in the same call.
+    """
+    if not title or not str(title).strip():
+        raise ValidationError("a plan needs a title")
+    g = _require_nodes(name, [objective])
+    if g.nodes[objective].kind != "objective":
+        raise ValidationError(f"{objective} is a {g.nodes[objective].kind}, "
+                              "not an objective")
+    if supersedes:
+        old = _plan(g, supersedes)
+        if old.superseded_by:
+            raise ValidationError(f"{supersedes} is already superseded by "
+                                  f"{old.superseded_by}")
+    else:
+        live = [p for p in g.active_plans() if p.objective == objective]
+        if live:
+            raise ValidationError(
+                f"{objective} already has an active plan ({live[0].id}: "
+                f"{live[0].title!r}). Supersede it rather than running two — "
+                "pass supersedes= / --supersedes.")
+
+    by = _agent(agent)
+    ev = store.append(name, "plan_add",
+                      {"plan_id": plan_id, "objective": objective,
+                       "title": title}, by=by)
+    pid = plan_id or f"plan:{ev['seq']}"
+
+    batch = []
+    for i, text in enumerate(steps or [], start=1):
+        batch.append({"op": "step_add", "args": {
+            "plan_id": pid, "step_id": f"{pid}#{i}", "ordinal": i,
+            "text": text, "command": None}})
+    if supersedes:
+        batch.append({"op": "plan_supersede", "args": {
+            "old_plan_id": supersedes, "new_plan_id": pid,
+            "reason": f"replaced by {pid}"}})
+    if batch:
+        store.append_many(name, batch, by=by)
+    return pid
+
+
+def step_add(name, plan_id, text, command=None, ordinal=None, agent=None) -> str:
+    if not text or not str(text).strip():
+        raise ValidationError("a step needs text")
+    p = _plan(store.load(name), plan_id)
+    if p.superseded_by:
+        raise ValidationError(
+            f"{plan_id} is superseded by {p.superseded_by}; add the step there")
+    ordinal = int(ordinal) if ordinal else (
+        max((s.ordinal for s in p.steps), default=0) + 1)
+    sid = f"{plan_id}#{ordinal}"
+    if any(s.id == sid for s in p.steps):
+        raise ValidationError(f"{plan_id} already has a step {ordinal}")
+    store.append(name, "step_add", {
+        "plan_id": plan_id, "step_id": sid, "ordinal": ordinal,
+        "text": text, "command": command}, by=_agent(agent))
+    return sid
+
+
+def step_state(name, plan_id, step_id, status, note="", blocked_reason=None,
+               produced=None, agent=None) -> None:
+    _one_of(status, STEP_STATUS, "step status")
+    _one_of(blocked_reason, BLOCKED_REASONS, "blocked reason")
+    # Both directions are refused. A blocked step with no cause tells a successor
+    # nothing it can act on, and a cause on a step that is not blocked is a stale
+    # reason waiting to misdirect one.
+    if status == "blocked" and not blocked_reason:
+        raise ValidationError(
+            "a blocked step needs a reason — the correct successor behaviour "
+            f"differs by cause. One of: {', '.join(BLOCKED_REASONS)}")
+    if blocked_reason and status != "blocked":
+        raise ValidationError(
+            f"a blocked reason only means something with status=blocked, "
+            f"not {status!r}")
+
+    g = store.load(name)
+    p = _plan(g, plan_id)
+    sid = _resolve_step(p, step_id)
+    for nid in produced or []:
+        if nid not in g.nodes:
+            raise ValidationError(
+                f"step claims it produced {nid}, which is not in the graph. "
+                "Record the node first: a step pointing at nothing is exactly "
+                "how an output ends up stranded in a dead session.")
+    store.append(name, "step_state", {
+        "plan_id": plan_id, "step_id": sid, "status": status, "note": note,
+        "blocked_reason": blocked_reason,
+        "produced": list(produced or [])}, by=_agent(agent))
+
+
+def plan_supersede(name, old_plan_id, new_plan_id, reason="", agent=None) -> None:
+    if old_plan_id == new_plan_id:
+        raise ValidationError("a plan cannot supersede itself")
+    g = store.load(name)
+    old, _new = _plan(g, old_plan_id), _plan(g, new_plan_id)
+    if old.superseded_by:
+        raise ValidationError(f"{old_plan_id} is already superseded by "
+                              f"{old.superseded_by}")
+    store.append(name, "plan_supersede", {
+        "old_plan_id": old_plan_id, "new_plan_id": new_plan_id,
+        "reason": reason}, by=_agent(agent))
+
+
+def active_plans(name) -> list:
+    return store.load(name).active_plans()
+
+
+def active_plan(name, objective=None):
+    """The single live plan, or the live plan for one objective.
+
+    With several live and no objective named this raises rather than choosing:
+    picking one arbitrarily is how a successor resumes the wrong work.
+    """
+    live = store.load(name).active_plans()
+    if objective:
+        live = [p for p in live if p.objective == objective]
+    if not live:
+        return None
+    if len(live) > 1:
+        raise AmbiguousHandoff(
+            "several plans are active; name one: "
+            + ", ".join(f"{p.id} ({p.objective})" for p in live))
+    return live[0]
 
 
 # --- the change ledger --------------------------------------------------------
