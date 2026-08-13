@@ -8,7 +8,7 @@ reach.
 *Dead reckoning*: fixing your position from a known point plus a log of the moves
 you made. That is exactly what this does.
 
-Stdlib Python 3 · no dependencies · 164 tests · v0.4.0
+Stdlib Python 3 · no dependencies · 241 tests · v0.5.0
 
 ## Why
 
@@ -201,6 +201,9 @@ reckon retro      # at close: what you left on the table
 | `reckon attempt` · `budget` | 2-strike failure budget, computed |
 | `reckon change` · `changes` · `cleaned` | what you altered on the target: the RoE cleanup list, and what a successor must not re-do |
 | `reckon plan add` · `plans` · `step` | the agreed path to an objective, and where in it you are |
+| `reckon handoff` · `fleet` | **the successor brief — resume point first**; who is where |
+| `reckon checkpoint` · `alarms` | the ritual as one command: delta, alarms, regenerate, stamp |
+| `reckon hook session-start` · `stop` | harness-invoked resume and end-of-session stamp; always exit 0 |
 | `reckon recall` · `suggest` | techniques that worked on nodes like this before |
 | `reckon retro` | capability→realization latency, time-to-mine, calibration |
 | `reckon import <dir>` | parse a markdown workspace into events |
@@ -221,7 +224,7 @@ every 5s and pick up each regeneration.
 cannot contradict each other; keeping six hand-written files in sync is the
 failure this replaces.
 
-**MCP** — `reckon mcp` serves 16 tools over stdio JSON-RPC, stdlib only, no SDK.
+**MCP** — `reckon mcp` serves 19 tools over stdio JSON-RPC, stdlib only, no SDK.
 This is the landing surface for an agent's output: without it, everything the
 agent produces reaches the graph only if a human retypes it. Tool errors return
 inside the result, so the agent sees `unknown node id: host:TYPO` and corrects
@@ -242,6 +245,29 @@ parsed. Imported objectives arrive without declared requirements and land in
 `undeclared` — separate from `unreachable`, because "nobody said what this needs"
 and "I cannot get there" call for different work. Declaring them is what turns an
 inventory into analysis.
+
+**Hooks** — `reckon hook session-start` and `reckon hook stop` are run by the
+harness, not by the agent, so they fire whether or not anything remembers. A rule
+in a prompt asking an agent to fetch its own brief is probabilistic and fails
+silently; that is exactly the remembering that does not happen when a session
+dies mid-step.
+
+```sh
+reckon hook config >> .claude/settings.json   # the fragment to paste; edit to merge
+```
+
+`SessionStart` injects the resume brief, so a new session begins already holding
+the cursor, what prior steps produced, why the last one stopped and what is owed.
+`Stop` stamps a checkpoint, so the *next* brief reflects where work actually
+stopped rather than whenever someone last ran a checkpoint by hand.
+
+**These two commands invert the house rule, and it is the one place that happens.**
+Everywhere else an invalid input is refused loudly. A hook runs on the harness's
+schedule, so one that fails loudly takes a session down with it — a missing
+engagement, a corrupt log, a half-written config must all exit `0` and print
+nothing. `reckon handoff` on a corrupt log exits `1` with the reason;
+`reckon hook session-start` on the same log exits `0` in silence. That inversion
+is confined to `reckon/hooks.py`, which is why it is its own module.
 
 ## Secrets
 

@@ -14,13 +14,15 @@ import os
 import sys
 from dataclasses import asdict
 
-from . import __version__, api, retro, ingest, store
+from . import __version__, api, hooks, retro, ingest, store
 from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, STEP_STATUS,
                     BLOCKED_REASONS, BLOCKED_IMPLICATION)
 from .queries import (frontier, unrealized, unmined, stale, why,
                       verification_queue, budget)
 from .redact import redact_graph, redact_obj
 from .render.board import board
+from .render.handoff import handoff as render_handoff, fleet as render_fleet
+from .render.checkpoint import checkpoint as render_checkpoint
 from .render.html import console as html_console
 from .render.views import render_all, VIEWS
 
@@ -284,6 +286,68 @@ def cmd_step_add(args):
                        ordinal=args.ordinal, agent=args.agent))
 
 
+def cmd_plan_reassign(args):
+    api.plan_reassign(args.name, args.plan, args.to_agent, reason=args.reason)
+    print(f"{args.plan} → {args.to_agent}")
+
+
+def cmd_handoff(args):
+    h = api.handoff(args.name, agent=args.agent, all_agents=args.all)
+    if getattr(args, "redact", False):
+        h = redact_obj(h)
+    text = render_handoff(h)
+    if args.out:
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(args.out)
+        if not getattr(args, "redact", False):
+            print("note: secrets render in full — re-run with --redact for a "
+                  "copy that leaves this machine", file=sys.stderr)
+        return
+    _emit(args, h, text)
+
+
+def cmd_hook_session_start(args):
+    # No error path on purpose: `hooks` already swallows everything, and this
+    # command must exit 0 whatever it finds. Printing nothing is a valid result.
+    text = hooks.session_start(args.name, agent=args.agent,
+                               redact=getattr(args, "redact", False))
+    if text:
+        print(text)
+
+
+def cmd_hook_stop(args):
+    hooks.stop(args.name)
+
+
+def cmd_hook_config(args):
+    print(json.dumps(hooks.settings_fragment(
+        engagement=args.name if args.pin else None), indent=2))
+
+
+def cmd_checkpoint(args):
+    c = api.checkpoint(args.name, render=not args.no_render,
+                       strict=args.strict, dry_run=args.dry_run)
+    _emit(args, c, render_checkpoint(c))
+    # Exit 2 only under --strict, and only for recording health: the instrument
+    # being behind is a scriptable failure, a blown failure budget is not.
+    if c["strict_fail"]:
+        sys.exit(2)
+
+
+def cmd_alarms(args):
+    rows = api.alarms(args.name)
+    text = "\n".join(f"{a['id']} {a['name']:<22} {a['why']}" for a in rows) \
+        or "no alarms"
+    _emit(args, rows, text)
+
+
+def cmd_fleet(args):
+    rows = api.fleet(args.name)
+    _emit(args, rows, render_fleet(rows))
+
+
 def cmd_change(args):
     print(api.change(args.name, args.target, args.what,
                      reversible=not args.irreversible,
@@ -517,6 +581,54 @@ def build_parser():
     q.add_argument("plan"); q.add_argument("text")
     q.add_argument("--command"); q.add_argument("--ordinal", type=int)
     q.add_argument("--agent"); q.set_defaults(func=cmd_step_add)
+
+    q = psub.add_parser("reassign", help="hand a plan to another agent")
+    q.add_argument("plan"); q.add_argument("to_agent", metavar="agent")
+    q.add_argument("--reason", default=""); q.set_defaults(func=cmd_plan_reassign)
+
+    s = sub.add_parser("handoff", help="the successor brief — resume point first")
+    s.add_argument("--agent", help="that agent's resume point only")
+    s.add_argument("--all", action="store_true",
+                   help="every active plan, stalled first")
+    s.add_argument("--out", help="write to a file instead of stdout")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--redact", action="store_true"); s.set_defaults(func=cmd_handoff)
+
+    s = sub.add_parser("fleet", help="where every agent is right now")
+    s.add_argument("--json", action="store_true"); s.set_defaults(func=cmd_fleet)
+
+    s = sub.add_parser("checkpoint",
+                       help="the ritual: delta, alarms, regenerate, stamp")
+    s.add_argument("--no-render", action="store_true",
+                   help="alarms + delta only, skip regeneration")
+    s.add_argument("--strict", action="store_true",
+                   help="exit 2 if a recording-health alarm fires")
+    s.add_argument("--dry-run", action="store_true",
+                   help="everything, without stamping")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_checkpoint)
+
+    s = sub.add_parser("alarms", help="the deterministic alarm set")
+    s.add_argument("--json", action="store_true"); s.set_defaults(func=cmd_alarms)
+
+    # Harness-invoked. Every one of these exits 0 whatever it finds: a hook that
+    # fails loudly takes a session down with it.
+    s = sub.add_parser("hook", help="harness-invoked entry points (fail open)")
+    hsub = s.add_subparsers(dest="hook_cmd", required=True)
+
+    q = hsub.add_parser("session-start",
+                        help="print the resume brief, or nothing")
+    q.add_argument("--agent"); q.add_argument("--redact", action="store_true")
+    q.set_defaults(func=cmd_hook_session_start)
+
+    q = hsub.add_parser("stop", help="stamp a checkpoint at session end")
+    q.set_defaults(func=cmd_hook_stop)
+
+    q = hsub.add_parser("config",
+                        help="the .claude/settings.json fragment to paste")
+    q.add_argument("--pin", action="store_true",
+                   help="pin RECKON_CURRENT to this engagement")
+    q.set_defaults(func=cmd_hook_config)
 
     s = sub.add_parser("plans", help="active plans and where each stands")
     s.add_argument("--all", action="store_true", help="include superseded")

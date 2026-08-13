@@ -83,6 +83,35 @@ TOOLS = [
            "rejected": {"type": "array", "items": _S}, "about": _S}, ["chose"]),
     _tool("note", "Free narrative attached to a node.", {"id": _S, "text": _S},
           ["id", "text"]),
+    _tool("checkpoint", "★ THIS is what to call when the operator says "
+                        "\"update checkpoint\". One command: delta since the "
+                        "last checkpoint, the deterministic alarm set, "
+                        "regenerated documents, and a decision-shaped brief. "
+                        "Do NOT reconstruct a checkpoint by sweeping documents "
+                        "by hand — the documents are derived from the graph and "
+                        "cannot drift from it. Read the recording-health "
+                        "section first: if it fires, the rest of the picture is "
+                        "behind the work.",
+          {"render": {"type": "boolean",
+                      "description": "regenerate console + views (default true)"},
+           "dry_run": {"type": "boolean",
+                       "description": "everything, without stamping"}},
+          []),
+    _tool("alarms", "The deterministic alarm set on its own: what is wrong with "
+                    "the recording and with the engagement, computed from the "
+                    "log rather than from anyone noticing.", {}, []),
+    _tool("handoff", "★ CALL THIS FIRST when resuming or picking up an "
+                     "engagement. Returns the resume brief: where in the "
+                     "agreed plan you are, what earlier steps already produced "
+                     "(so you do not redo them), why the last one stopped and "
+                     "what that implies, plus position, next moves and "
+                     "outstanding target changes. Starting with `status` "
+                     "instead gives you position without procedure, and you "
+                     "will re-derive a path that already exists. Pass your own "
+                     "agent id.",
+          {"agent": {**_S, "description": "your agent id; returns only your "
+                                          "resume point"}},
+          []),
     _tool("plan_add", "Attach an ordered plan to an objective, so the procedure "
                       "survives this session. One active plan per objective.",
           {"objective": _S, "title": _S,
@@ -163,6 +192,19 @@ def dispatch(tool: str, args: dict):
                           args.get("rejected"), args.get("about"))
     if tool == "note":
         return api.note(name, args["id"], args["text"])
+    if tool == "checkpoint":
+        from .render.checkpoint import checkpoint as render
+        return render(api.checkpoint(name,
+                                     render=args.get("render", True),
+                                     dry_run=bool(args.get("dry_run"))))
+    if tool == "alarms":
+        return api.alarms(name)
+    if tool == "handoff":
+        # `plan_reassign` is deliberately absent from TOOLS: an agent taking
+        # over another agent's plan unprompted is how two agents end up running
+        # the same steps against one target. Operator-facing, CLI only.
+        from .render.handoff import handoff as render
+        return render(api.handoff(name, agent=args.get("agent")))
     if tool == "plan_add":
         return api.plan_add(name, args["objective"], args["title"],
                             steps=args.get("steps"),

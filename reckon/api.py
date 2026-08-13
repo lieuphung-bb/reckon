@@ -16,7 +16,7 @@ from dataclasses import asdict
 
 from . import store
 from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, OPERATOR_ID,
-                    STEP_STATUS, BLOCKED_REASONS, fold)
+                    STEP_STATUS, BLOCKED_REASONS, BLOCKED_IMPLICATION, fold)
 from .reference import make_reference
 from .queries import (frontier, unrealized, unmined, stale, coverage, why,
                       verification_queue, reach, budget, delta as _delta,
@@ -267,7 +267,7 @@ def plan_add(name, objective, title, steps=None, plan_id=None, supersedes=None,
     by = _agent(agent)
     ev = store.append(name, "plan_add",
                       {"plan_id": plan_id, "objective": objective,
-                       "title": title}, by=by)
+                       "title": title, "agent": by}, by=by)
     pid = plan_id or f"plan:{ev['seq']}"
 
     batch = []
@@ -346,26 +346,226 @@ def plan_supersede(name, old_plan_id, new_plan_id, reason="", agent=None) -> Non
         "reason": reason}, by=_agent(agent))
 
 
-def active_plans(name) -> list:
-    return store.load(name).active_plans()
+def plan_reassign(name, plan_id, to_agent, reason="") -> None:
+    """Hand a plan to another agent.
+
+    Supersede-style: the previous owner stays readable in the log, because
+    "a3 died at step 3 and a1 picked it up" is engagement history. Step state
+    and `produced` are preserved — the new owner inherits the cursor.
+
+    Deliberately operator-facing and NOT exposed over MCP: an agent taking over
+    another agent's plan unprompted is how two agents end up executing the same
+    steps against one target.
+    """
+    if not to_agent:
+        raise ValidationError("plan_reassign needs an agent to hand it to")
+    g = store.load(name)
+    p = _plan(g, plan_id)
+    if p.superseded_by:
+        raise ValidationError(f"{plan_id} is superseded by {p.superseded_by}; "
+                              "reassign the plan that replaced it")
+    store.append(name, "plan_reassign", {
+        "plan_id": plan_id, "from_agent": p.agent, "to_agent": to_agent,
+        "reason": reason}, by=_agent())
 
 
-def active_plan(name, objective=None):
-    """The single live plan, or the live plan for one objective.
+def active_plans(name, agent=None) -> list:
+    live = store.load(name).active_plans()
+    return [p for p in live if p.agent == agent] if agent else live
 
-    With several live and no objective named this raises rather than choosing:
+
+def active_plan(name, objective=None, agent=None):
+    """The single live plan, or the live plan for one objective or one agent.
+
+    With several live and nothing named this raises rather than choosing:
     picking one arbitrarily is how a successor resumes the wrong work.
     """
     live = store.load(name).active_plans()
     if objective:
         live = [p for p in live if p.objective == objective]
+    if agent:
+        live = [p for p in live if p.agent == agent]
     if not live:
         return None
     if len(live) > 1:
         raise AmbiguousHandoff(
-            "several plans are active; name one: "
-            + ", ".join(f"{p.id} ({p.objective})" for p in live))
+            "several plans are active; name one with --agent or an objective: "
+            + ", ".join(f"{p.id} ({p.objective}"
+                        + (f", {p.agent}" if p.agent else "") + ")"
+                        for p in live))
     return live[0]
+
+
+# --- fleet: who has stopped without saying so ---------------------------------
+
+def _last_authored(name) -> dict:
+    """{agent: seq of its most recent authored event}. A "running" agent that
+    has written nothing for a long time is visible from this even before any
+    lease expires."""
+    out = {}
+    for ev in store.read_events(name):
+        who = ev.get("by")
+        if who:
+            out[who] = max(out.get(who, 0), ev.get("seq", 0))
+    return out
+
+
+def fleet(name) -> list:
+    """One row per agent, stalled first.
+
+    The useful fleet question is not "who is working" but "who has stopped
+    without saying so". That signal — STALLED — is defined against claim expiry
+    from SPEC-002, which is not built: `claim` stays empty and `stalled` is
+    always False until it lands. The shape is here so lighting it up later is a
+    computation change, not a schema change.
+    """
+    g = store.load(name)
+    last = _last_authored(name)
+    owned = {}
+    for p in g.active_plans():
+        if p.agent:
+            owned.setdefault(p.agent, p)
+
+    rows = []
+    for who in sorted(set(owned) | set(last)):
+        p = owned.get(who)
+        cur = p.cursor if p else None
+        rows.append({
+            "agent": who,
+            "plan": p.id if p else None,
+            "title": p.title if p else None,
+            "cursor": (f"{cur.ordinal}/{len(p.steps)} {cur.text}"
+                       if cur else None),
+            "cursor_status": cur.status if cur else None,
+            "status": (cur.status if cur else "idle") if p else "idle",
+            "claim": None,          # SPEC-002
+            "stalled": False,       # SPEC-002: claim expired AND cursor running
+            "last_seq": last.get(who, 0),
+        })
+    rows.sort(key=lambda r: (not r["stalled"], r["status"] == "idle",
+                             -r["last_seq"]))
+    return rows
+
+
+# --- handoff ------------------------------------------------------------------
+
+def _explain_node(g, nid) -> dict:
+    """Every id a brief prints must come with what it IS (§9.6): the reader may
+    be a different model with no history of this engagement."""
+    n = g.nodes.get(nid)
+    if not n:
+        return {"id": nid, "label": nid, "kind": "?",
+                "note": "not in the graph"}
+    return {"id": nid, "label": n.label, "kind": n.kind,
+            "epistemic": n.epistemic, "exploitation": n.exploitation,
+            "confidence": n.confidence}
+
+
+def _explain_edge(g, eid) -> dict:
+    e = g.edges.get(eid)
+    if not e:
+        return {"id": eid, "text": eid}
+    src = g.nodes.get(e.src)
+    dst = g.nodes.get(e.dst)
+    return {"id": eid, "rel": e.rel, "confidence": e.confidence,
+            "from": src.label if src else e.src,
+            "to": dst.label if dst else e.dst,
+            "privilege": e.props.get("privilege"),
+            "text": f"{src.label if src else e.src} —{e.rel}→ "
+                    f"{dst.label if dst else e.dst}"}
+
+
+def _resume_block(g, p) -> dict:
+    """One plan's resume point, with everything needed to act on it."""
+    cur = p.cursor
+    obj = g.nodes.get(p.objective)
+    produced, warnings = [], []
+    for s in p.steps:
+        if s.status != "done":
+            continue
+        if s.produced:
+            produced.append({
+                "ordinal": s.ordinal, "text": s.text,
+                "nodes": [_explain_node(g, n) for n in s.produced]})
+        elif not s.note:
+            # §9.8 — the output is orphaned and a successor may redo it.
+            warnings.append(
+                f"step {s.ordinal} ({s.text!r}) is done with nothing recorded "
+                "as produced and no note — its output may be stranded")
+    if obj is not None and obj.status == "achieved":
+        # §8 — a plan against an objective already won is not a resume point.
+        warnings.append(
+            f"{p.objective} is already achieved; this plan is stale — go to the "
+            "frontier rather than resuming it")
+
+    return {
+        "plan": p.id, "title": p.title, "agent": p.agent,
+        "objective": p.objective,
+        "objective_label": obj.label if obj else p.objective,
+        "objective_status": obj.status if obj else None,
+        "crown": bool(obj.props.get("crown_jewel")) if obj else False,
+        "total_steps": len(p.steps),
+        "cursor": ({"ordinal": cur.ordinal, "text": cur.text,
+                    "status": cur.status, "command": cur.command,
+                    "note": cur.note,
+                    "blocked_reason": cur.blocked_reason,
+                    "implication": BLOCKED_IMPLICATION.get(cur.blocked_reason)}
+                   if cur else None),
+        "produced": produced,
+        "resting_on": [_explain_edge(g, e)
+                       for e in why(g, p.objective).get("assumptions", [])],
+        "warnings": warnings,
+        "stalled": False,           # SPEC-002
+    }
+
+
+def handoff(name, agent=None, all_agents=False) -> dict:
+    """The successor brief, as data. `render.handoff` turns it into markdown.
+
+    Resume-point first, position second: a successor reading top-down can act
+    without reading the rest. Everything below the resume point is for when the
+    plan needs re-judging rather than continuing.
+    """
+    g = store.load(name)
+    live = g.active_plans()
+    if agent:
+        plans = [p for p in live if p.agent == agent]
+    elif all_agents:
+        plans = live
+    elif len(live) > 1:
+        raise AmbiguousHandoff(
+            "several plans are active; pass an agent or --all rather than "
+            "resuming an arbitrary one: "
+            + ", ".join(f"{p.id} ({p.objective}"
+                        + (f", {p.agent}" if p.agent else "") + ")"
+                        for p in live))
+    else:
+        plans = live
+
+    # Stalled first (§7.1). Dark until SPEC-002, but the ordering is here.
+    resume = sorted((_resume_block(g, p) for p in plans),
+                    key=lambda r: not r["stalled"])
+
+    return {
+        "engagement": name,
+        "seq": g.seq,
+        "agent": agent,
+        "resume": resume,
+        "coverage": coverage(g),
+        "owned": [_explain_node(g, nid)
+                  for nid, info in reach(g).items()
+                  if info["cost"] == 0
+                  and (g.nodes.get(nid) and g.nodes[nid].kind != "operator"
+                       and not g.nodes[nid].superseded_by)],
+        "alarms": {"unrealized": unrealized(g), "unmined": unmined(g),
+                   "stale": stale(g), "budget_blown": budget(g)},
+        "next_moves": {"unrealized": unrealized(g),
+                       "queue": verification_queue(g),
+                       "frontier": frontier(g)},
+        "ruled_out": g.decisions,
+        "changes": [asdict(c) for c in g.changes if not c.cleaned],
+        "claims": [],               # SPEC-002
+    }
 
 
 # --- the change ledger --------------------------------------------------------
@@ -442,6 +642,37 @@ def stamp_seen(name, seq: int) -> None:
         fh.write(str(seq))
 
 
+def _checkpoint_path(name):
+    import os
+    return os.path.join(store.ENGAGEMENTS, f"{name}.checkpoint")
+
+
+def last_checkpoint(name) -> int:
+    """Deliberately a SEPARATE marker from `.seen`.
+
+    `.seen` is "last time I looked" and moves whenever anyone reads `delta`;
+    this is "last checkpoint". Reading the board must not silently satisfy the
+    checkpoint interval, and a checkpoint must not reset every agent's personal
+    read position.
+    """
+    import os
+    p = _checkpoint_path(name)
+    if not os.path.exists(p):
+        return 0
+    try:
+        with open(p) as fh:
+            return int(fh.read().strip() or 0)
+    except (ValueError, OSError):
+        return 0
+
+
+def stamp_checkpoint(name, seq: int) -> None:
+    import os
+    os.makedirs(store.ENGAGEMENTS, exist_ok=True)
+    with open(_checkpoint_path(name), "w") as fh:
+        fh.write(str(seq))
+
+
 def delta(name, since: int | None = None, stamp: bool = True) -> dict:
     """What changed since `since` (default: since you last looked).
 
@@ -464,6 +695,164 @@ def recall(name, node_id) -> list:
 
 def suggestions(name, limit: int = 3) -> dict:
     return _recall.suggestions(store.load(name), engagement=name, limit=limit)
+
+
+# --- the checkpoint alarm set (SPEC-004 §4) -----------------------------------
+
+# Recording-health alarms describe the INSTRUMENT; engagement-health alarms
+# describe the engagement. `--strict` gates on the first group only, because a
+# blown failure budget is a fact about the work, not a reason to fail a script.
+RECORDING, ENGAGEMENT = "recording", "engagement"
+
+STALE_RECORDING_MINUTES = 30
+
+# Every alarm in §4, including the ones that cannot fire yet. Listing the dark
+# ones is the point: a silently absent alarm is indistinguishable from one that
+# never fires, and this file is where someone will come looking.
+ALARM_REGISTRY = (
+    ("A1", "stale-recording", RECORDING, True,
+     "the graph is behind the work"),
+    ("A2", "empty-delta", RECORDING, True,
+     "nothing happened, OR nothing was recorded — A3 is what tells them apart"),
+    ("A3", "unrecorded-work", RECORDING, False,
+     "needs the PostToolUse trace (SPEC-004 §5.2), which is not built"),
+    ("A4", "done-without-produced", ENGAGEMENT, False,
+     "computed by handoff already; not wired into the alarm set yet"),
+    ("A5", "no-decision", ENGAGEMENT, True,
+     "a decision point passed unrecorded"),
+    ("A6", "stalled-agent", ENGAGEMENT, False,
+     "needs claim expiry from SPEC-002, which is not built"),
+    ("A7", "uncleaned-changes", ENGAGEMENT, True,
+     "RoE debt — informational, never blocking"),
+)
+
+DARK_ALARMS = tuple(a for a in ALARM_REGISTRY if not a[3])
+
+
+def _minutes_since_last_event(name):
+    """Age of the newest event in the log, in minutes, or None if empty."""
+    from datetime import datetime, timezone
+    events = store.read_events(name)
+    if not events:
+        return None
+    for ev in reversed(events):
+        ts = ev.get("ts")
+        if not ts:
+            continue
+        try:
+            when = datetime.fromisoformat(ts)
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - when).total_seconds() / 60.0
+    return None
+
+
+def alarms(name, since: int | None = None) -> list:
+    """The §4 set that is currently firing, each with severity and why.
+
+    Deterministic and computed from the log: none of these depends on an agent
+    remembering to notice anything, which is the whole point — a checkpoint that
+    relies on an agent recording is one that will eventually render a confident,
+    hours-old picture.
+    """
+    g = store.load(name)
+    frm = last_checkpoint(name) if since is None else since
+    out = []
+
+    age = _minutes_since_last_event(name)
+    if age is not None and age > STALE_RECORDING_MINUTES:
+        out.append({
+            "id": "A1", "name": "stale-recording", "group": RECORDING,
+            "severity": "warn",
+            "why": f"{int(age)}m since the last recorded event — the graph is "
+                   "behind the work",
+            "detail": {"minutes": int(age),
+                       "threshold": STALE_RECORDING_MINUTES}})
+
+    if g.seq <= frm:
+        out.append({
+            "id": "A2", "name": "empty-delta", "group": RECORDING,
+            "severity": "warn",
+            "why": "no events since the last checkpoint — either nothing "
+                   "happened or nothing was recorded, and this alarm cannot "
+                   "tell you which (that is A3's job)",
+            "detail": {"seq": g.seq, "since": frm}})
+
+    if not [d for d in g.decisions if d.get("seq", 0) > frm]:
+        out.append({
+            "id": "A5", "name": "no-decision", "group": ENGAGEMENT,
+            "severity": "info",
+            "why": "no decision recorded since the last checkpoint — a "
+                   "decision point probably passed unrecorded",
+            "detail": {"since": frm}})
+
+    outstanding = [asdict(c) for c in g.changes if not c.cleaned]
+    if outstanding:
+        out.append({
+            "id": "A7", "name": "uncleaned-changes", "group": ENGAGEMENT,
+            "severity": "info",
+            "why": f"{len(outstanding)} outstanding change(s) on the target — "
+                   "RoE debt, owed at close",
+            "detail": {"changes": outstanding}})
+
+    return out
+
+
+def checkpoint(name, render=True, strict=False, dry_run=False,
+               agent=None) -> dict:
+    """The ritual, as one command with no judgment in it.
+
+    delta → alarms → regenerate → stamp → brief. `strict` reports whether a
+    RECORDING-health alarm fired so a caller can gate on it; it never raises,
+    because a checkpoint that refuses to tell you where you are is worse than
+    one that tells you it is behind.
+    """
+    frm = last_checkpoint(name)
+    g = store.load(name)
+    # An explicit `since` and stamp=False: reading the checkpoint delta must not
+    # disturb any agent's personal `.seen` position (§3).
+    changed = delta(name, since=frm, stamp=False)
+    fired = alarms(name, since=frm)
+
+    rendered = []
+    if render:
+        from .render.views import render_all, VIEWS
+        from .render.html import console as html_console
+        import os
+        out_dir = os.path.join(store.RECKON_HOME, "out")
+        os.makedirs(os.path.join(out_dir, name), exist_ok=True)
+        for view, text in render_all(g, name).items():
+            with open(os.path.join(out_dir, name, f"{view}.md"), "w") as fh:
+                fh.write(text)
+        html = os.path.join(out_dir, f"{name}.html")
+        with open(html, "w") as fh:
+            fh.write(html_console(g, name))
+        rendered = [html] + [os.path.join(out_dir, name, f"{v}.md")
+                             for v in VIEWS]
+
+    if not dry_run:
+        stamp_checkpoint(name, g.seq)
+
+    return {
+        "engagement": name,
+        "seq": g.seq,
+        "since": frm,
+        "events": g.seq - frm,
+        "alarms": fired,
+        "recording_health": [a for a in fired if a["group"] == RECORDING],
+        "strict_fail": bool(strict and
+                            any(a["group"] == RECORDING for a in fired)),
+        "delta": changed,
+        "next_moves": {"unrealized": unrealized(g),
+                       "queue": verification_queue(g)},
+        "coverage": coverage(g),
+        "rendered": rendered,
+        "stamped": not dry_run,
+        "dark": [{"id": i, "name": n, "why": w}
+                 for i, n, _grp, _live, w in DARK_ALARMS],
+    }
 
 
 def apply_events(name, events: list) -> int:

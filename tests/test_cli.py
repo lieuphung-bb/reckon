@@ -10,10 +10,11 @@ So: build the parser, and route one command through each shape.
 """
 
 import argparse
+import os
 import io
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 from reckon import api, cli, store
 
@@ -41,8 +42,8 @@ class Base(unittest.TestCase):
         store.ENGAGEMENTS = self._old
 
     def run_cli(self, *argv):
-        buf = io.StringIO()
-        with redirect_stdout(buf):
+        buf, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(err):
             cli.main(["-e", "t", *argv])
         return buf.getvalue().strip()
 
@@ -67,8 +68,10 @@ class TestParser(unittest.TestCase):
                                 f"subcommand {label!r} has no handler bound")
                 seen.append(label)
         for expected in ("board", "plan add", "plan show", "plan supersede",
-                         "plan step", "plans", "step", "change", "changes",
-                         "cleaned"):
+                         "plan step", "plan reassign", "plans", "step",
+                         "change", "changes", "cleaned", "handoff", "fleet",
+                         "checkpoint", "alarms", "hook session-start",
+                         "hook stop", "hook config"):
             self.assertIn(expected, seen)
 
 
@@ -102,6 +105,65 @@ class TestPlanCommands(Base):
         pid = self.run_cli("plan", "add", "obj:t21", "v1", "--step", "a")
         self.run_cli("plan", "step", pid, "b", "--command", "nxc smb 10.99.10.5")
         self.assertIn("nxc smb", self.run_cli("plan", "show", pid))
+
+
+class TestHandoffCommands(Base):
+
+    def test_handoff_routes_through_the_cli_and_names_the_resume_point(self):
+        pid = self.run_cli("plan", "add", "obj:t21", "to DA",
+                           "--step", "dump hives", "--step", "extract DCC2",
+                           "--agent", "a3")
+        self.run_cli("step", "done", pid, "1", "--produced", "host:lab07")
+        self.run_cli("step", "blocked", pid, "2", "--reason", "refusal")
+        out = self.run_cli("handoff", "--agent", "a3")
+        self.assertIn("# Handoff", out)
+        self.assertIn("extract DCC2", out)
+        self.assertIn("do NOT retry as written", out)
+
+    def test_handoff_out_writes_the_brief_to_a_file(self):
+        self.run_cli("plan", "add", "obj:t21", "to DA", "--step", "a")
+        dest = os.path.join(self.tmp, "briefs", "handoff.md")
+        printed = self.run_cli("handoff", "--out", dest)
+        self.assertEqual(printed, dest)
+        with open(dest) as fh:
+            self.assertIn("# Handoff", fh.read())
+
+    def test_fleet_and_reassign_route_through_the_cli(self):
+        pid = self.run_cli("plan", "add", "obj:t21", "to DA", "--step", "a",
+                           "--agent", "a3")
+        self.assertIn("a3", self.run_cli("fleet"))
+
+        self.run_cli("plan", "reassign", pid, "a1", "--reason", "a3 stalled")
+
+        self.assertIn("a1", self.run_cli("fleet"))
+        self.assertIn("to DA", self.run_cli("handoff", "--agent", "a1"))
+        # a3 keeps a fleet row because it authored events, but it no longer
+        # holds the plan, so its resume point is empty rather than stale.
+        self.assertIn("No active plan", self.run_cli("handoff", "--agent", "a3"))
+
+
+class TestCheckpointCommands(Base):
+
+    def test_checkpoint_prints_the_brief_and_stamps(self):
+        out = self.run_cli("checkpoint", "--no-render")
+        self.assertIn("# Checkpoint", out)
+        self.assertEqual(api.last_checkpoint("t"), store.load("t").seq)
+
+    def test_strict_exits_2_on_a_recording_alarm_and_0_otherwise(self):
+        """The exit code is what lets a hook gate on checkpoint health without
+        breaking interactive use, so it is wiring worth testing."""
+        self.run_cli("checkpoint", "--no-render")          # arm A2
+        with self.assertRaises(SystemExit) as cm:
+            self.run_cli("checkpoint", "--no-render", "--strict")
+        self.assertEqual(cm.exception.code, 2)
+
+        api.add_node("t", "cred", "x", node_id="cred:x")
+        api.decide("t", "keep going", reason="quiets A5")
+        self.run_cli("checkpoint", "--no-render", "--strict")   # exits 0
+
+    def test_alarms_runs_on_its_own(self):
+        self.run_cli("checkpoint", "--no-render")
+        self.assertIn("A2", self.run_cli("alarms"))
 
 
 class TestChangeCommands(Base):

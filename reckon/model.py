@@ -146,6 +146,11 @@ class Plan:
     id: str
     objective: str
     title: str
+    # Ownership, distinct from `by` on events. `by` is who WROTE a step result;
+    # `agent` is who owns the plan now. After a takeover those differ, and the
+    # difference is the engagement history: a3 wrote step 2, a1 owns the plan.
+    # Nullable — a plan the operator wrote with nobody assigned is normal.
+    agent: str | None = None
     steps: list = field(default_factory=list)
     superseded_by: str | None = None
     seq: int = 0
@@ -333,7 +338,8 @@ def _apply(g: Graph, ev: dict) -> None:
         pid = a.get("plan_id") or f"plan:{seq}"
         if pid not in g.plans:
             g.plans[pid] = Plan(id=pid, objective=a.get("objective", ""),
-                                title=a.get("title", ""), seq=seq)
+                                title=a.get("title", ""),
+                                agent=a.get("agent"), seq=seq)
 
     elif op == "step_add":
         p = g.plans.get(a.get("plan_id"))
@@ -368,6 +374,13 @@ def _apply(g: Graph, ev: dict) -> None:
         old = g.plans.get(a.get("old_plan_id"))
         if old:
             old.superseded_by = a.get("new_plan_id")
+
+    elif op == "plan_reassign":
+        # Step state is deliberately NOT reset: the new owner inherits the
+        # cursor and re-verifies a running step rather than starting over.
+        p = g.plans.get(a.get("plan_id"))
+        if p:
+            p.agent = a.get("to_agent")
 
     elif op == "change":
         # The id is derived from seq rather than carried in the event: seq is
