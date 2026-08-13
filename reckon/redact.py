@@ -120,4 +120,22 @@ def redact_graph(g):
         e.id = redact_text(e.id)
         e.props = redact_obj(e.props)
     g.edges = {e.id: e for e in g.edges.values()}
+
+    # A step's `command` is the exact invocation, which is where a credential
+    # gets typed; `produced` points at nodes whose ids were remapped above.
+    for p in g.plans.values():
+        p.title = redact_text(p.title)
+        p.objective = remap.get(p.objective, p.objective)
+        for s in p.steps:
+            s.text = redact_text(s.text)
+            s.command = redact_text(s.command)
+            s.note = redact_text(s.note)
+            s.produced = [remap.get(x, x) for x in s.produced]
+
+    # A revert hint is a command, and a command that undoes an account creation
+    # tends to carry the credential that created it.
+    for c in g.changes:
+        c.target = remap.get(c.target, c.target)
+        c.what = redact_text(c.what)
+        c.revert_hint = redact_text(c.revert_hint)
     return g

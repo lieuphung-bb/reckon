@@ -1,0 +1,103 @@
+[
+  {"op": "note", "args": {"target_id": "operator:me", "text": "NORTHWIND ASSIST — a wholly fictional engagement against an LLM application. Every service, address, credential and finding is invented. Addresses use RFC 5737 TEST-NET-2 (198.51.100.0/24), TEST-NET-3 (203.0.113.0/24) and RFC 1918 10.99.0.0/16. Built to exercise every reckon flow against an AI system rather than a domain: all four alarms, a four-deep chain, one hypothesized edge gating two objectives, a refuted assumption that OPENS the crown path, a superseded finding, a blown failure budget, and cross-engagement recall against examples/demo-prior.json."}},
+
+  {"op": "add_node", "args": {"id": "cred:tenant-a-user", "kind": "cred", "label": "demo-tenant-a : D3mo-P@ss-11", "epistemic": "verified", "confidence": "A", "source": "engagement-provisioned tenant account"}},
+  {"op": "add_edge", "args": {"id": "e:hold-tenant-a", "src": "operator:me", "dst": "cred:tenant-a-user", "rel": "holds", "epistemic": "verified"}},
+  {"op": "set_exploitation", "args": {"id": "cred:tenant-a-user", "state": "examined"}},
+
+  {"op": "add_node", "args": {"id": "service:chat-api", "kind": "service", "label": "assist /v1/chat", "epistemic": "verified", "confidence": "A", "props": {"zone": "saas-edge", "ip": "198.51.100.20", "role": "https llm chat api, bearer auth, tool-calling enabled", "ports": "443"}}},
+  {"op": "add_edge", "args": {"id": "e:tenant-a-chat", "src": "cred:tenant-a-user", "dst": "service:chat-api", "rel": "grants-access-to", "epistemic": "verified", "confidence": "A", "props": {"rank": 1, "privilege": "authenticated tenant-A session"}}},
+
+  {"op": "add_node", "args": {"id": "artifact:system-prompt", "kind": "artifact", "label": "chat-api system prompt", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:chat-sysprompt", "src": "service:chat-api", "dst": "artifact:system-prompt", "rel": "contains", "epistemic": "verified"}},
+  {"op": "set_exploitation", "args": {"id": "artifact:system-prompt", "state": "acquired"}},
+  {"op": "note", "args": {"target_id": "artifact:system-prompt", "text": "Echoed back in the first hour via a formatting-instruction request. Skimmed for a jailbreak, never read for what it DISCLOSES — it names the tool list and the retrieval filter."}},
+
+  {"op": "add_node", "args": {"id": "service:vector-store", "kind": "service", "label": "retrieval backend /query", "epistemic": "verified", "confidence": "A", "props": {"zone": "saas-internal", "ip": "10.99.4.20", "role": "http rag retrieval backend, shared index", "ports": "8443"}}},
+  {"op": "add_edge", "args": {"id": "e:chat-vector", "src": "service:chat-api", "dst": "service:vector-store", "rel": "grants-access-to", "epistemic": "verified", "confidence": "A", "props": {"rank": 1, "privilege": "retrieval on behalf of the session"}}},
+
+  {"op": "add_node", "args": {"id": "artifact:kb-corpus", "kind": "artifact", "label": "shared retrieval corpus (tenant-writable)", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:vector-corpus", "src": "service:vector-store", "dst": "artifact:kb-corpus", "rel": "contains", "epistemic": "verified"}},
+  {"op": "set_exploitation", "args": {"id": "artifact:kb-corpus", "state": "acquired"}},
+  {"op": "examine", "args": {"id": "artifact:kb-corpus", "outcome": "tenant uploads are indexed into the SAME collection as curated docs — no per-tenant namespace"}},
+
+  {"op": "add_node", "args": {"id": "host:ingest-worker", "kind": "host", "label": "ingest-worker", "epistemic": "verified", "confidence": "A", "props": {"zone": "saas-internal", "ip": "10.99.4.80", "role": "http document ingestion worker", "ports": "80,8000"}}},
+  {"op": "add_edge", "args": {"id": "e:vector-ingest", "src": "service:vector-store", "dst": "host:ingest-worker", "rel": "grants-access-to", "epistemic": "verified", "props": {"rank": 1, "privilege": "upload callback reachable from the retrieval tier"}}},
+
+  {"op": "add_node", "args": {"id": "service:mcp-gw", "kind": "service", "label": "tool gateway /mcp", "epistemic": "verified", "confidence": "A", "props": {"zone": "saas-internal", "ip": "10.99.4.40", "role": "http mcp tool proxy, stdio bridge", "ports": "8080"}}},
+  {"op": "add_edge", "args": {"id": "e:chat-mcpgw", "src": "service:chat-api", "dst": "service:mcp-gw", "rel": "grants-access-to", "epistemic": "verified", "confidence": "A", "props": {"rank": 1, "privilege": "tool invocation through the agent loop"}}},
+
+  {"op": "add_node", "args": {"id": "cred:tool-token", "kind": "cred", "label": "mcp-gw service token : D3mo-T0k3n-07", "epistemic": "verified", "confidence": "B", "source": "verbose tool-error response"}},
+  {"op": "add_edge", "args": {"id": "e:mcpgw-token", "src": "service:mcp-gw", "dst": "cred:tool-token", "rel": "contains", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:hold-tool-token", "src": "operator:me", "dst": "cred:tool-token", "rel": "holds", "epistemic": "verified"}},
+  {"op": "set_exploitation", "args": {"id": "cred:tool-token", "state": "acquired"}},
+  {"op": "note", "args": {"target_id": "cred:tool-token", "text": "A failed tool call returned the gateway's own bearer token in the error body. Held since, never sent."}},
+
+  {"op": "add_node", "args": {"id": "host:agent-runner", "kind": "host", "label": "agent-runner", "epistemic": "hypothesized", "confidence": "C", "props": {"zone": "saas-internal", "ip": "10.99.4.60", "role": "container host executing mcp tool calls", "ports": "22"}}},
+  {"op": "note", "args": {"target_id": "host:agent-runner", "text": "Identity inferred from a hostname in a stack trace — never confirmed against the host itself."}},
+  {"op": "add_edge", "args": {"id": "e:token-runner", "src": "cred:tool-token", "dst": "host:agent-runner", "rel": "grants-access-to", "epistemic": "hypothesized", "confidence": "C", "props": {"rank": 2, "privilege": "assumed tool-call execution context"}}},
+
+  {"op": "add_node", "args": {"id": "artifact:runner-env", "kind": "artifact", "label": "runner environment + mounted secrets", "epistemic": "hypothesized", "confidence": "C"}},
+  {"op": "add_edge", "args": {"id": "e:runner-env", "src": "host:agent-runner", "dst": "artifact:runner-env", "rel": "contains", "epistemic": "verified"}},
+
+  {"op": "add_node", "args": {"id": "objective:corpus-control", "kind": "objective", "label": "T1 write into the shared retrieval corpus", "status": "achieved", "props": {"requires": [{"target": "artifact:kb-corpus", "min_rank": 1}]}}},
+
+  {"op": "add_node", "args": {"id": "objective:tool-rce", "kind": "objective", "label": "T3 command execution via tool abuse", "status": "open", "props": {"requires": [{"target": "host:agent-runner", "min_rank": 2}]}}},
+  {"op": "add_node", "args": {"id": "objective:runner-secrets", "kind": "objective", "label": "T4 read the runner's mounted secrets", "status": "open", "props": {"requires": [{"target": "artifact:runner-env", "min_rank": 2}]}}},
+  {"op": "note", "args": {"target_id": "objective:tool-rce", "text": "Both T3 and T4 sit behind the same untested edge. One send of the tool token settles them together — which is exactly what the queue is for."}},
+
+  {"op": "add_node", "args": {"id": "service:ticket-tool", "kind": "service", "label": "support ticket tool (mcp)", "epistemic": "hypothesized", "confidence": "C", "props": {"zone": "saas-internal", "ip": "203.0.113.100", "role": "http support ticket tool exposed as an mcp tool", "ports": "443"}}},
+  {"op": "add_edge", "args": {"id": "e:mcpgw-ticket", "src": "service:mcp-gw", "dst": "service:ticket-tool", "rel": "grants-access-to", "epistemic": "hypothesized", "confidence": "C", "props": {"rank": 2, "privilege": "assumed: the gateway forwards with its own identity, not the caller's"}}},
+  {"op": "add_node", "args": {"id": "objective:ticket-read", "kind": "objective", "label": "T5 read other tenants' support tickets through the proxy", "status": "open", "props": {"requires": [{"target": "service:ticket-tool", "min_rank": 2}]}}},
+
+  {"op": "add_node", "args": {"id": "assumption:tenant-scope", "kind": "assumption", "label": "retrieval is tenant-scoped", "epistemic": "hypothesized", "confidence": "D", "source": "vendor documentation only"}},
+  {"op": "note", "args": {"target_id": "assumption:tenant-scope", "text": "Polarity matters: the cross-tenant branch is live only if this assumption is FALSE. Carried as hypothesized because nothing had tested it — the docs asserting it are not evidence about this deployment."}},
+
+  {"op": "add_node", "args": {"id": "artifact:tenant-b-records", "kind": "artifact", "label": "tenant-B customer records in the shared index", "epistemic": "hypothesized", "confidence": "C"}},
+  {"op": "add_edge", "args": {"id": "e:vector-tenantb", "src": "service:vector-store", "dst": "artifact:tenant-b-records", "rel": "grants-access-to", "epistemic": "hypothesized", "confidence": "C", "props": {"rank": 2, "privilege": "assumed: cross-tenant retrieval if scoping is not enforced in the query"}}},
+  {"op": "add_edge", "args": {"id": "e:tenantb-depends", "src": "artifact:tenant-b-records", "dst": "assumption:tenant-scope", "rel": "depends-on", "epistemic": "hypothesized"}},
+
+  {"op": "add_node", "args": {"id": "objective:xtenant-read", "kind": "objective", "label": "T2 read another tenant's records", "epistemic": "verified", "status": "open", "props": {"crown_jewel": true, "requires": [{"target": "artifact:tenant-b-records", "min_rank": 2}]}}},
+
+  {"op": "add_node", "args": {"id": "technique:rag-poison", "kind": "technique", "label": "Poison the shared retrieval corpus with an instruction-bearing document", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:corpus-poison", "src": "artifact:kb-corpus", "dst": "technique:rag-poison", "rel": "applies-technique", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:vector-poison", "src": "service:vector-store", "dst": "technique:rag-poison", "rel": "applies-technique", "epistemic": "verified"}},
+
+  {"op": "add_node", "args": {"id": "technique:zwc-inject", "kind": "technique", "label": "Zero-width-character instruction smuggling in an uploaded document", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:corpus-zwc", "src": "artifact:kb-corpus", "dst": "technique:zwc-inject", "rel": "applies-technique", "epistemic": "verified"}},
+  {"op": "add_edge", "args": {"id": "e:chat-zwc", "src": "service:chat-api", "dst": "technique:zwc-inject", "rel": "applies-technique", "epistemic": "verified"}},
+
+  {"op": "add_node", "args": {"id": "finding:prompt-guard", "kind": "finding", "label": "system prompt forbids cross-tenant retrieval, so scoping is enforced", "epistemic": "hypothesized", "confidence": "D"}},
+  {"op": "add_edge", "args": {"id": "e:sysprompt-guard", "src": "artifact:system-prompt", "dst": "finding:prompt-guard", "rel": "evidenced-by", "epistemic": "hypothesized"}},
+  {"op": "note", "args": {"target_id": "finding:prompt-guard", "text": "Read as a control because it is phrased as one. A sentence in a prompt is not an access control."}},
+
+  {"op": "add_node", "args": {"id": "finding:retrieval-unscoped", "kind": "finding", "label": "the tenant filter is applied in the client, not in the index query", "epistemic": "verified", "confidence": "A"}},
+  {"op": "add_edge", "args": {"id": "e:vector-unscoped", "src": "service:vector-store", "dst": "finding:retrieval-unscoped", "rel": "evidenced-by", "epistemic": "verified"}},
+  {"op": "supersede", "args": {"old_id": "finding:prompt-guard", "new_id": "finding:retrieval-unscoped", "reason": "poisoned-corpus probe returned a tenant-B document verbatim, prompt guard notwithstanding"}},
+
+  {"op": "set_epistemic", "args": {"id": "assumption:tenant-scope", "state": "refuted", "confidence": "A", "source": "poisoned-corpus probe, three consecutive runs"}},
+  {"op": "note", "args": {"target_id": "assumption:tenant-scope", "text": "REFUTED. An uploaded document carrying a retrieval-bait heading came back attributed to tenant B. Scoping is applied when the client renders, not when the index is queried — so anything that reads the raw retrieval response crosses the boundary. This refutation is what opens T2."}},
+  {"op": "set_epistemic", "args": {"id": "e:vector-tenantb", "state": "verified", "confidence": "A", "source": "tenant-B document returned in a raw /query response"}},
+  {"op": "set_epistemic", "args": {"id": "artifact:tenant-b-records", "state": "verified", "confidence": "A"}},
+  {"op": "set_epistemic", "args": {"id": "e:tenantb-depends", "state": "refuted"}},
+
+  {"op": "add_node", "args": {"id": "assumption:shared-container", "kind": "assumption", "label": "the chat worker and the tool runner share a container", "epistemic": "hypothesized", "confidence": "D", "source": "latency correlation only"}},
+  {"op": "add_edge", "args": {"id": "e:chat-runner", "src": "service:chat-api", "dst": "host:agent-runner", "rel": "escalates-to", "epistemic": "hypothesized", "confidence": "D", "props": {"rank": 3, "privilege": "assumed: direct execution if the sandbox is shared"}}},
+  {"op": "add_edge", "args": {"id": "e:runner-depends", "src": "host:agent-runner", "dst": "assumption:shared-container", "rel": "depends-on", "epistemic": "hypothesized"}},
+  {"op": "attempt", "args": {"id": "e:chat-runner", "outcome": "failed", "note": "filesystem probe through the chat worker shows a different mount namespace"}},
+  {"op": "set_epistemic", "args": {"id": "e:chat-runner", "state": "refuted", "source": "separate containers, no shared namespace"}},
+  {"op": "set_epistemic", "args": {"id": "assumption:shared-container", "state": "refuted", "confidence": "A"}},
+  {"op": "note", "args": {"target_id": "assumption:shared-container", "text": "Killed the shortcut. The runner is only reachable through the tool token now, which is why that one edge carries both remaining objectives."}},
+
+  {"op": "attempt", "args": {"id": "e:token-runner", "outcome": "failed", "note": "token sent to the gateway's tool endpoint — 401, audience mismatch"}},
+  {"op": "attempt", "args": {"id": "e:token-runner", "outcome": "failed", "note": "retried against the internal listener on 10.99.4.40:8080 — same 401"}},
+
+  {"op": "add_node", "args": {"id": "host:model-registry", "kind": "host", "label": "model-registry", "epistemic": "hypothesized", "confidence": "D", "props": {"zone": "saas-internal", "ip": "10.99.4.200", "role": "model weight registry", "ports": "443"}}},
+  {"op": "note", "args": {"target_id": "host:model-registry", "text": "Named in the system prompt's tool list. No route to it from anything held — this needs discovery, not verification."}},
+  {"op": "add_node", "args": {"id": "objective:weights-exfil", "kind": "objective", "label": "T6 exfiltrate the fine-tuned model weights", "status": "open", "props": {"crown_jewel": true, "requires": [{"target": "host:model-registry", "min_rank": 3}]}}},
+
+  {"op": "decide", "args": {"chose": "prove cross-tenant retrieval before touching the tool runner", "reason": "the retrieval path needs no new credential and the corpus is already writable; the runner rests on a token that has not been sent", "rejected": ["send the tool token first", "hunt for a route to the model registry"], "about": "objective:xtenant-read"}},
+  {"op": "decide", "args": {"chose": "stop resending the tool token", "reason": "two 401s with no success — the token is audience-bound to the gateway's own callers, so re-scope to how the gateway mints it rather than retry the send", "rejected": ["third send with a forged audience claim", "brute the tool endpoint path"]}},
+
+  {"op": "note", "args": {"target_id": "objective:xtenant-read", "text": "Satisfiable with access already in hand: the retrieval edge is verified and rank 2 is met. Never executed against real tenant-B records — the highest-value un-run step in the engagement."}}
+]

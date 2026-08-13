@@ -28,7 +28,10 @@ try:                                        # POSIX only; degrade rather than fa
 except ImportError:                         # pragma: no cover
     fcntl = None
 
-SCHEMA_VERSION = 1
+# v2 (0.5.0) adds the `change`/`cleaned` ops and an optional `by` on the event
+# envelope. Both are additive: a v1 log folds to an identical graph, and `by` is
+# omitted entirely when there is no agent, so events keep their v1 shape.
+SCHEMA_VERSION = 2
 
 RECKON_HOME = os.environ.get("RECKON_HOME", os.path.expanduser("~/projects/reckon"))
 ENGAGEMENTS = os.path.join(RECKON_HOME, "engagements")
@@ -122,13 +125,18 @@ def next_seq(name: str) -> int:
     return _last_seq(path_for(name)) + 1
 
 
-def append(name: str, op: str, args: dict) -> dict:
+def append(name: str, op: str, args: dict, by: str | None = None) -> dict:
     """Append one event under an exclusive lock. Returns the event as written."""
-    return append_many(name, [{"op": op, "args": args}])[0]
+    return append_many(name, [{"op": op, "args": args}], by=by)[0]
 
 
-def append_many(name: str, events: list) -> list:
-    """Append a batch under ONE lock — a session's worth of events is atomic."""
+def append_many(name: str, events: list, by: str | None = None) -> list:
+    """Append a batch under ONE lock — a session's worth of events is atomic.
+
+    `by` is authorship: which agent wrote this. It is what makes "the last
+    authored event" answerable, so a fleet view can show an agent that has gone
+    quiet. A per-event `by` overrides the batch default.
+    """
     path = path_for(name)
     os.makedirs(ENGAGEMENTS, exist_ok=True)
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -140,6 +148,9 @@ def append_many(name: str, events: list) -> list:
                 seq += 1
                 ev = {"seq": seq, "ts": ts, "v": SCHEMA_VERSION,
                       "op": e["op"], "args": e.get("args", {})}
+                author = e.get("by", by)
+                if author:                      # omitted when absent: v1 shape
+                    ev["by"] = author
                 fh.write(json.dumps(ev, sort_keys=True, ensure_ascii=False) + "\n")
                 written.append(ev)
             fh.flush()

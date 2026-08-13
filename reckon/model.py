@@ -96,6 +96,103 @@ class Edge:
         return int(self.props.get("rank", 0))
 
 
+STEP_STATUS = ("pending", "running", "done", "blocked", "skipped")
+
+# Why an enum and not free text: the correct successor behaviour differs by
+# cause, so the reason has to be machine-readable to be acted on. `refusal` is
+# the row that pays for the field — a fresh session of the same model will
+# refuse again, and without this the successor burns a turn rediscovering that.
+# The value is the IMPLICATION, which is what a brief prints; the bare enum
+# tells a reader nothing they can act on.
+BLOCKED_IMPLICATION = {
+    "context-exhausted": "resume as written — nothing is wrong with the step",
+    "refusal": "do NOT retry as written; a fresh session of the same model will "
+               "refuse again — reframe, or route to the other model",
+    "timeout": "check target state first — it may have partially landed",
+    "target-state": "re-verify target identity before continuing",
+    "dependency": "back to the frontier; the plan itself may be wrong",
+    "operator": "read the note; do not assume",
+}
+BLOCKED_REASONS = tuple(BLOCKED_IMPLICATION)
+
+
+@dataclass
+class Step:
+    id: str
+    ordinal: int
+    text: str
+    command: str | None = None
+    status: str = "pending"
+    blocked_reason: str | None = None
+    # ★ The load-bearing field. A step records the graph nodes it created, so a
+    # successor can see that step 2's output is already in the graph rather than
+    # repeating it. Without this a step is cosmetic: it says work happened but
+    # leaves the result stranded wherever the dead session put it.
+    produced: list = field(default_factory=list)
+    note: str = ""
+    by: str | None = None
+    seq: int = 0
+
+
+@dataclass
+class Plan:
+    """An ordered list of steps against one objective, with a cursor.
+
+    Deliberately not a task tracker: no dependencies, no assignees, no dates, no
+    estimates. The whole model is an ordered list and a position in it, because
+    the failure being solved is the procedure dying with the session, not the
+    absence of project management.
+    """
+    id: str
+    objective: str
+    title: str
+    # Ownership, distinct from `by` on events. `by` is who WROTE a step result;
+    # `agent` is who owns the plan now. After a takeover those differ, and the
+    # difference is the engagement history: a3 wrote step 2, a1 owns the plan.
+    # Nullable — a plan the operator wrote with nobody assigned is normal.
+    agent: str | None = None
+    steps: list = field(default_factory=list)
+    superseded_by: str | None = None
+    seq: int = 0
+
+    @property
+    def cursor(self):
+        """Where to resume: the first running or blocked step, else the first
+        pending one. A running step is the cursor rather than the next pending
+        one because a session that died mid-step leaves it running, and that is
+        exactly the step a successor must re-verify."""
+        for s in self.steps:
+            if s.status in ("running", "blocked"):
+                return s
+        for s in self.steps:
+            if s.status == "pending":
+                return s
+        return None
+
+    @property
+    def active(self) -> bool:
+        return not self.superseded_by
+
+
+@dataclass
+class Change:
+    """A modification we made to the TARGET, not a thing the target has.
+
+    Not a node, for the same reason a decision is not: nothing routes through it,
+    so putting it in the access graph would pollute reachability. It answers two
+    questions at once - what a successor must not re-do, and what is owed at close
+    under the rules of engagement.
+    """
+    id: str
+    target: str
+    what: str
+    reversible: bool = True
+    revert_hint: str = ""
+    cleaned: bool = False
+    by: str | None = None
+    seq: int = 0
+
+
 @dataclass
 class Graph:
     nodes: dict = field(default_factory=dict)
@@ -106,6 +203,8 @@ class Graph:
     # node - putting it in the access graph would pollute reachability with
     # something nothing can route through.
     decisions: list = field(default_factory=list)
+    changes: list = field(default_factory=list)
+    plans: dict = field(default_factory=dict)
 
     # -- accessors -------------------------------------------------------------
     def out_edges(self, node_id: str) -> list:
@@ -127,7 +226,13 @@ class Graph:
             "nodes": {k: asdict(v) for k, v in self.nodes.items()},
             "edges": {k: asdict(v) for k, v in self.edges.items()},
             "decisions": self.decisions,
+            "changes": [asdict(c) for c in self.changes],
+            "plans": {k: asdict(v) for k, v in self.plans.items()},
         }
+
+    def active_plans(self) -> list:
+        return sorted((p for p in self.plans.values() if p.active),
+                      key=lambda p: p.seq)
 
 
 # --- fold ---------------------------------------------------------------------
@@ -228,6 +333,69 @@ def _apply(g: Graph, ev: dict) -> None:
             if not hasattr(tgt, "attempts") or tgt.attempts is None:
                 tgt.attempts = []
             tgt.attempts.append(rec)
+
+    elif op == "plan_add":
+        pid = a.get("plan_id") or f"plan:{seq}"
+        if pid not in g.plans:
+            g.plans[pid] = Plan(id=pid, objective=a.get("objective", ""),
+                                title=a.get("title", ""),
+                                agent=a.get("agent"), seq=seq)
+
+    elif op == "step_add":
+        p = g.plans.get(a.get("plan_id"))
+        if p:
+            ordinal = int(a.get("ordinal") or len(p.steps) + 1)
+            sid = a.get("step_id") or f"{p.id}#{ordinal}"
+            if not any(s.id == sid for s in p.steps):
+                p.steps.append(Step(id=sid, ordinal=ordinal,
+                                    text=a.get("text", ""),
+                                    command=a.get("command"),
+                                    by=ev.get("by"), seq=seq))
+                p.steps.sort(key=lambda s: s.ordinal)
+
+    elif op == "step_state":
+        p = g.plans.get(a.get("plan_id"))
+        for s in (p.steps if p else []):
+            if s.id != a.get("step_id"):
+                continue
+            s.status = a.get("status", s.status)
+            # Cleared unless restated: a step that moved off `blocked` no longer
+            # has a blockage, and a stale reason would misdirect a successor.
+            s.blocked_reason = a.get("blocked_reason")
+            if a.get("note"):
+                s.note = a["note"]
+            if a.get("produced"):
+                s.produced = list(dict.fromkeys(
+                    list(s.produced) + list(a["produced"])))
+            s.by = ev.get("by") or s.by
+            s.seq = seq
+
+    elif op == "plan_supersede":
+        old = g.plans.get(a.get("old_plan_id"))
+        if old:
+            old.superseded_by = a.get("new_plan_id")
+
+    elif op == "plan_reassign":
+        # Step state is deliberately NOT reset: the new owner inherits the
+        # cursor and re-verifies a running step rather than starting over.
+        p = g.plans.get(a.get("plan_id"))
+        if p:
+            p.agent = a.get("to_agent")
+
+    elif op == "change":
+        # The id is derived from seq rather than carried in the event: seq is
+        # assigned under the store lock, so an id minted before the write would
+        # race between the CLI and the MCP server.
+        g.changes.append(Change(
+            id=f"chg:{seq}", target=a.get("target", ""), what=a.get("what", ""),
+            reversible=bool(a.get("reversible", True)),
+            revert_hint=a.get("revert_hint", ""),
+            by=ev.get("by"), seq=seq))
+
+    elif op == "cleaned":
+        for c in g.changes:
+            if c.id == a.get("change_id"):
+                c.cleaned = True
 
     elif op == "note":
         n = g.nodes.get(a.get("target_id"))

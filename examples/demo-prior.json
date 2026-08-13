@@ -13,6 +13,14 @@
   {"op": "add_node", "args": {"id": "technique:browser-cred", "kind": "technique", "label": "App-bound browser store decrypt via the elevation service", "epistemic": "verified"}},
   {"op": "add_edge", "args": {"id": "e:desk-browser", "src": "host:desk09", "dst": "technique:browser-cred", "rel": "applies-technique", "epistemic": "verified"}},
 
+  {"op": "add_node", "args": {"id": "service:helpdesk-bot", "kind": "service", "label": "helpdesk-bot /ask", "epistemic": "verified", "props": {"zone": "dmz", "ip": "198.51.100.60", "role": "http llm chat api", "ports": "443"}}},
+  {"op": "add_node", "args": {"id": "technique:indirect-injection", "kind": "technique", "label": "Indirect prompt injection via retrieved content", "epistemic": "verified", "props": {"note": "instructions carried in a document the assistant retrieves, not in the user turn"}}},
+  {"op": "add_edge", "args": {"id": "e:helpdesk-injection", "src": "service:helpdesk-bot", "dst": "technique:indirect-injection", "rel": "applies-technique", "epistemic": "verified"}},
+
+  {"op": "add_node", "args": {"id": "service:doc-index", "kind": "service", "label": "doc-index /search", "epistemic": "verified", "props": {"zone": "corp", "ip": "10.99.10.70", "role": "http vector store rag", "ports": "8443"}}},
+  {"op": "add_node", "args": {"id": "technique:corpus-poison", "kind": "technique", "label": "Retrieval corpus poisoning", "epistemic": "verified", "props": {"note": "a writable ingestion path put attacker text into the same index as curated docs"}}},
+  {"op": "add_edge", "args": {"id": "e:docindex-poison", "src": "service:doc-index", "dst": "technique:corpus-poison", "rel": "applies-technique", "epistemic": "verified"}},
+
   {"op": "add_node", "args": {"id": "technique:queue-rce", "kind": "technique", "label": "Deserialisation in a message broker config load", "epistemic": "refuted"}},
   {"op": "add_edge", "args": {"id": "e:mail-queue", "src": "host:mail01", "dst": "technique:queue-rce", "rel": "applies-technique", "epistemic": "refuted"}},
   {"op": "note", "args": {"target_id": "technique:queue-rce", "text": "Refuted here — the broker was patched. Recall must not suggest it."}}
