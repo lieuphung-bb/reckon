@@ -29,8 +29,13 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self._old_e, self._old_h = store.ENGAGEMENTS, store.RECKON_HOME
+        self._old_o = store.OUT
         store.ENGAGEMENTS = self.tmp
         store.RECKON_HOME = self.tmp
+        # `OUT` is resolved once at import and is no longer derived from
+        # RECKON_HOME at use time, so redirecting the home alone would leave a
+        # rendering checkpoint writing into the operator's real data root.
+        store.OUT = os.path.join(self.tmp, "out")
         api.create("t")
         api.add_node("t", "host", "lab07", node_id="host:lab07",
                      epistemic="verified")
@@ -42,6 +47,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         store.ENGAGEMENTS, store.RECKON_HOME = self._old_e, self._old_h
+        store.OUT = self._old_o
 
     def age_the_log(self, minutes):
         """Rewrite every timestamp to N minutes ago — A1 is the one alarm that

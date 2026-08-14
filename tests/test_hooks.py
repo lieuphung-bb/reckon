@@ -27,11 +27,13 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self._old_e, self._old_h = store.ENGAGEMENTS, store.RECKON_HOME
+        self._old_o = store.OUT
         # The real layout, not a flattened one: the §5.2 hook is a shell command
         # that derives its path from $RECKON_HOME, so a test home that does not
         # match production would test a file nothing writes to.
         store.ENGAGEMENTS = os.path.join(self.tmp, "engagements")
         store.RECKON_HOME = self.tmp
+        store.OUT = os.path.join(self.tmp, "out")
         api.create("t")
         api.add_node("t", "host", "lab07", node_id="host:lab07",
                      epistemic="verified")
@@ -39,6 +41,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         store.ENGAGEMENTS, store.RECKON_HOME = self._old_e, self._old_h
+        store.OUT = self._old_o
         os.environ.pop("RECKON_AGENT", None)
 
     def run_cli(self, *argv):

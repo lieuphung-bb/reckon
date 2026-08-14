@@ -80,6 +80,14 @@ _TRACE_JQ = (
     'agent:($a|.[0:80])}'
     '|until((tojson|utf8bytelength)<=3990;.cmd|=.[0:(length*3/4|floor)]) end')
 
+# The trace is written by the shell, not by this process, so the data root gets
+# resolved a second time — in shell syntax, and it must land in the same place
+# as `store._resolve_home`. A disagreement does not error: the trace goes on
+# being written somewhere nothing reads, and A3 unrecorded-work simply goes
+# quiet — the one alarm whose whole purpose is to not be silent. A test pins the
+# two together so they cannot drift.
+HOME_EXPR = '${RECKON_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/reckon}'
+
 # `case` first: the engagement name comes from the environment, where nothing
 # validates it, and `store.path_for` would refuse the same three shapes. An
 # empty or absent RECKON_CURRENT is simply nothing to trace, not an error.
@@ -89,7 +97,7 @@ POST_TOOL_USE_COMMAND = (
     'case "${RECKON_CURRENT:-}" in \'\'|.*|*/*) exit 0;; esac; '
     'command -v jq >/dev/null 2>&1 && '
     'jq -c --arg a "${RECKON_AGENT:-}" \'' + _TRACE_JQ + '\' '
-    '>> "${RECKON_HOME:-$HOME/projects/reckon}/engagements/'
+    '>> "' + HOME_EXPR + '/engagements/'
     '$RECKON_CURRENT.trace.jsonl" 2>/dev/null || true')
 
 
