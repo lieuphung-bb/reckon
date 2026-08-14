@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "reckon"
-version = "0.5.0"
+version = "0.6.0"
 description = "Dead reckoning for an engagement: where you stand, what you can already win, and what you never looked at"
 requires-python = ">=3.10"
 dependencies = []

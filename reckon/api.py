@@ -993,7 +993,7 @@ def checkpoint(name, render=True, strict=False, dry_run=False,
         from .render.views import render_all, VIEWS
         from .render.html import console as html_console
         import os
-        out_dir = os.path.join(store.RECKON_HOME, "out")
+        out_dir = store.OUT
         os.makedirs(os.path.join(out_dir, name), exist_ok=True)
         for view, text in render_all(g, name).items():
             with open(os.path.join(out_dir, name, f"{view}.md"), "w") as fh:

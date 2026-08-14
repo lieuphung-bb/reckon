@@ -8,7 +8,7 @@ that I never used.
 *Dead reckoning*: fixing your position from a known point plus a log of the moves
 you made. That is exactly what this does.
 
-Stdlib Python 3 · no dependencies · v0.5.0
+Stdlib Python 3 · no dependencies · v0.6.0
 
 ## Why
 
@@ -52,6 +52,24 @@ One optional dependency, for one thing: `jq`, used by the hook that records tool
 activity. Without it that hook writes nothing, and the alarm for unrecorded work
 (below) can never fire. `reckon hook config` says so when it is missing.
 
+Engagement data does not live in the checkout. It goes to
+`~/.local/share/reckon` (or `$XDG_DATA_HOME/reckon`), so deleting or re-cloning
+the tool cannot take an engagement record with it. Set `RECKON_HOME` to keep it
+somewhere else — a per-client volume, an encrypted disk — and `RECKON_OUT` to
+send only the rendered files elsewhere, such as a folder a host machine reads.
+The log itself should stay on a local filesystem: single-writer safety rests on
+`flock`, which is unreliable over network and shared-folder mounts.
+
+Everything reckon reads from the environment, in one place:
+
+| | Default | |
+|---|---|---|
+| `RECKON_HOME` | `$XDG_DATA_HOME/reckon`, else `~/.local/share/reckon` | the data root: logs and markers |
+| `RECKON_OUT` | `$RECKON_HOME/out` | rendered console + views, separable so they can travel |
+| `RECKON_CURRENT` | none | default engagement, so `-e` can be omitted |
+| `RECKON_REFERENCES` | none | catalog sources, `store=path`, `:`-separated |
+| `RECKON_AGENT` | none | who is recording, when several agents share an engagement |
+
 ## Try it
 
 Three synthetic engagements ship with the repo. `demo-prior` exists so `recall` has
@@ -63,7 +81,7 @@ reckon -e demo-prior new demo-prior && reckon -e demo-prior apply examples/demo-
 reckon -e demo new demo && reckon -e demo apply examples/demo.json
 
 reckon -e demo board                  # all four alarms, frontier, verification queue
-reckon -e demo console                # -> out/demo.html
+reckon -e demo console                # -> <data root>/out/demo.html
 reckon -e demo recall host:portal01   # a technique that worked on a node like this
 ```
 
@@ -82,14 +100,15 @@ reckon -e demo-ai queue                        # one untested edge gating two ob
 ```
 
 ```
-examples/*.json           input fixtures, tracked
+examples/*.json                    input fixtures, tracked, in the repo
         ↓ reckon apply
-engagements/<name>.jsonl  the source of truth: append-only event log, gitignored
+<data root>/engagements/<name>.jsonl   the source of truth: append-only log
         ↓ reckon console / views
-out/<name>.html + views   derived, regenerated on demand, gitignored
+<data root>/out/<name>.html + views    derived, regenerated on demand
 ```
 
-Only the event log matters. Delete `out/` and it rebuilds; delete a log and the
+The data root is `~/.local/share/reckon` unless you moved it. Only the event log
+matters: delete the rendered output and it rebuilds; delete a log and the
 engagement is gone.
 
 ## The loop
@@ -223,6 +242,23 @@ agent produces reaches the graph only if a human retypes it. Tool errors return
 inside the result, so the agent sees `unknown node id: host:TYPO` and corrects
 itself rather than the transport failing.
 
+It is a subprocess, not a service — no port, no container, no daemon. Register it
+with your agent and it is spawned per session:
+
+```json
+{"mcpServers": {"reckon": {
+  "command": "/path/to/reckon/bin/reckon",
+  "args": ["mcp"],
+  "env": {"RECKON_HOME": "/home/you/.local/share/reckon",
+          "RECKON_REFERENCES": "atlas=/home/you/ref/atlas-techniques.md"}}}}
+```
+
+The subprocess inherits the agent's environment, not your shell's, so anything
+you set in a profile is absent here — set it in `env` or it is not set at all.
+
+**Leave `RECKON_CURRENT` out** and pass `engagement` per call: a stale default
+sends a session's records to the wrong engagement, silently.
+
 **Python** — `reckon.api` is the stable surface; the CLI and MCP server are both
 thin wrappers over it, so validation cannot be bypassed by a second caller.
 
@@ -309,13 +345,20 @@ cheapest next test for free.
 
 ### Storage
 
-One append-only JSONL file per engagement under `engagements/`. State is a fold
-over the log, so history is never destroyed, a refuted conclusion is superseded
-rather than deleted, and any past moment can be replayed — which is what makes
-the retro metrics computable.
+One append-only JSONL file per engagement, in `engagements/` under the data
+root. State is a fold over the log, so history is never destroyed, a refuted
+conclusion is superseded rather than deleted, and any past moment can be
+replayed — which is what makes the retro metrics computable.
 
 Plain text is deliberate: an agent can read the file and append events directly,
 with no CLI round-trip.
+
+The root sits outside the source tree, and both halves live under it: the logs
+in `engagements/`, the rendered console and views in `out/`. One path to back
+up, to carry between machines, and to wipe when an engagement closes. Rendered
+output stays there rather than going to a cache directory, because the console
+is the most credential-dense file reckon writes and a cache is where cleanup
+tools delete freely.
 
 ### Guarantees
 
@@ -331,8 +374,14 @@ with no CLI round-trip.
 ## Secrets
 
 Engagement data contains live credentials. **Default output is unredacted,
-because mid-engagement you need the actual credential.** `engagements/` and
-`out/` are gitignored; treat both as loot.
+because mid-engagement you need the actual credential.** Treat the whole data
+root as loot: the logs and the rendered console alike.
+
+It is kept out of the source tree so that no ignore rule stands between a
+credential and a push. A fork whose owner rewrites `.gitignore`, or a tidy-up
+that moves the ignore rules, cannot publish what was never in the repository.
+The ignore entries remain anyway, for anyone who points `RECKON_HOME` back at
+their checkout.
 
 ```sh
 reckon console            # full secrets — local only, never publish
@@ -375,6 +424,25 @@ the source is:
 
 Reads are one-way: engagement learnings never flow back automatically, so a messy
 live engagement cannot pollute curated knowledge.
+
+## Upgrading
+
+Engagement data used to live inside the checkout. If you have `engagements/`
+there from an earlier version, move it yourself — nothing relocates it for you,
+because data that appears to vanish on an upgrade is the worst way for a tool to
+fail:
+
+```sh
+mkdir -p ~/.local/share/reckon
+mv ~/projects/reckon/engagements ~/.local/share/reckon/
+mv ~/projects/reckon/out ~/.local/share/reckon/     # optional; it rebuilds
+```
+
+Or leave it where it is and pin `RECKON_HOME=~/projects/reckon` in your shell
+profile. Either way, do it before the first run on the new version, or reckon
+will start a fresh, empty store at the new location and the old one will simply
+sit there unread. Re-run `reckon hook config` afterwards: the tool-activity hook
+carries the path it writes traces to.
 
 ## Tests
 

@@ -177,7 +177,7 @@ def cmd_why(args):
 
 def cmd_views(args):
     g = _graph(args)
-    out_dir = args.out or os.path.join(store.RECKON_HOME, "out", args.name)
+    out_dir = args.out or os.path.join(store.OUT, args.name)
     os.makedirs(out_dir, exist_ok=True)
     for view, text in render_all(g, args.name).items():
         with open(os.path.join(out_dir, f"{view}.md"), "w") as fh:
@@ -187,7 +187,7 @@ def cmd_views(args):
 
 def cmd_console(args):
     g = _graph(args)
-    out = args.out or os.path.join(store.RECKON_HOME, "out", f"{args.name}.html")
+    out = args.out or os.path.join(store.OUT, f"{args.name}.html")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w") as fh:
         fh.write(html_console(g, args.name))

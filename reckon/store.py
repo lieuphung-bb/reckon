@@ -33,8 +33,45 @@ except ImportError:                         # pragma: no cover
 # omitted entirely when there is no agent, so events keep their v1 shape.
 SCHEMA_VERSION = 2
 
-RECKON_HOME = os.environ.get("RECKON_HOME", os.path.expanduser("~/projects/reckon"))
+def _resolve_home(env=None) -> str:
+    """The data root: `$RECKON_HOME`, else `$XDG_DATA_HOME/reckon`, else
+    `~/.local/share/reckon`.
+
+    Outside the checkout on purpose. A clone that is also the store makes
+    `rm -rf` on a source directory destroy an engagement record, and leaves a
+    `.gitignore` as the only thing between live credentials and a push.
+    """
+    env = os.environ if env is None else env
+    home = (env.get("RECKON_HOME") or "").strip()
+    if home:
+        return os.path.expanduser(home)
+    xdg = (env.get("XDG_DATA_HOME") or "").strip()
+    if not xdg:
+        xdg = os.path.join(env.get("HOME") or os.path.expanduser("~"),
+                           ".local", "share")
+    return os.path.join(os.path.expanduser(xdg), "reckon")
+
+
+def _resolve_out(env=None) -> str:
+    """Where rendered artifacts land: `$RECKON_OUT`, else `<home>/out`.
+
+    Separable from the log because the console is what someone else's machine
+    reads, and unseparable in the other direction: single-writer safety rests on
+    `flock`, which is unreliable over `hgfs` and NFS, so the log stays local
+    while the output travels.
+    """
+    env = os.environ if env is None else env
+    out = (env.get("RECKON_OUT") or "").strip()
+    return os.path.expanduser(out) if out else os.path.join(
+        _resolve_home(env), "out")
+
+
+RECKON_HOME = _resolve_home()
 ENGAGEMENTS = os.path.join(RECKON_HOME, "engagements")
+# The one place the output location is resolved. Callers read `OUT`; nothing
+# else rebuilds `<home>/out`, so pointing the rendered half elsewhere is one
+# change rather than three that can disagree.
+OUT = _resolve_out()
 
 _TAIL_BYTES = 8192
 

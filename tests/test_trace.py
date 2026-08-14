@@ -26,14 +26,17 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self._old_e, self._old_h = store.ENGAGEMENTS, store.RECKON_HOME
+        self._old_o = store.OUT
         store.ENGAGEMENTS = os.path.join(self.tmp, "engagements")
         store.RECKON_HOME = self.tmp
+        store.OUT = os.path.join(self.tmp, "out")
         api.create("t")
         api.add_node("t", "host", "lab07", node_id="host:lab07",
                      epistemic="verified")
 
     def tearDown(self):
         store.ENGAGEMENTS, store.RECKON_HOME = self._old_e, self._old_h
+        store.OUT = self._old_o
 
     def raw(self, *lines):
         with open(store.trace_path_for("t"), "a", encoding="utf-8") as fh:

@@ -9,6 +9,6 @@ Public surface (stable): `reckon.api` for reads and validated writes,
 Everything else is internal and may change.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = ["api", "reference", "__version__"]
