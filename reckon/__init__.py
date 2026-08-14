@@ -5,8 +5,8 @@ append-only event log, folded into a graph, answering where you stand and what
 you can already reach.
 
 Public surface (stable): `reckon.api` for reads and validated writes,
-`reckon.reference` for the phase-2 reference-layer seam. Everything else is
-internal and may change.
+`reckon.reference` for the reference-layer seam and the resolvers behind it.
+Everything else is internal and may change.
 """
 
 __version__ = "0.5.0"

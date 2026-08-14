@@ -14,7 +14,7 @@ import os
 import sys
 from dataclasses import asdict
 
-from . import __version__, api, hooks, retro, ingest, store
+from . import __version__, api, hooks, retro, ingest, reference, store
 from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, STEP_STATUS,
                     BLOCKED_REASONS, BLOCKED_IMPLICATION)
 from .queries import (frontier, unrealized, unmined, stale, why,
@@ -577,7 +577,12 @@ def build_parser():
     s.add_argument("reason", nargs="?", default=""); s.set_defaults(func=cmd_supersede)
 
     s = sub.add_parser("ref", help="link a node to the reference layer")
-    s.add_argument("id"); s.add_argument("store", choices=("neo4j", "chroma"))
+    # No `choices` here on purpose: the set of stores depends on what the
+    # operator configured, and freezing it in the parser would mean every new
+    # reference source needed a CLI edit. `api` validates and names them.
+    s.add_argument("id")
+    s.add_argument("store", help="reference store, e.g. neo4j or a source "
+                                 "configured in $RECKON_REFERENCES")
     s.add_argument("label"); s.add_argument("key"); s.set_defaults(func=cmd_ref)
 
     s = sub.add_parser("apply"); s.add_argument("file"); s.set_defaults(func=cmd_apply)
@@ -760,7 +765,7 @@ def main(argv=None):
     try:
         args.func(args)
     except (api.ValidationError, store.StoreError, ingest.IngestError,
-            FileNotFoundError) as exc:
+            reference.ReferenceError, FileNotFoundError) as exc:
         sys.exit(f"reckon: {exc}")
 
 
