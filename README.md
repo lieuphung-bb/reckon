@@ -1,28 +1,29 @@
 # reckon
 
 **Engagement state as a graph — for penetration tests and red-team operations.**
-An append-only record of what you found, what you hold, and what you have not yet
-tried, folded into a graph that answers where you stand and what you can already
-reach.
+You record what you find as you go. reckon keeps the record, and answers the two
+questions a notes file cannot: what can I reach right now, and what am I holding
+that I never used.
 
 *Dead reckoning*: fixing your position from a known point plus a log of the moves
 you made. That is exactly what this does.
 
-Stdlib Python 3 · no dependencies · 241 tests · v0.5.0
+Stdlib Python 3 · no dependencies · v0.5.0
 
 ## Why
 
-Long engagements fail in two distinct ways, and a prose workspace cannot tell
-them apart:
+Two things go wrong on a long engagement, and notes cannot tell you either one is
+happening.
 
-| Axis | States | Question | Typical miss |
-|---|---|---|---|
-| **epistemic** | `unexplored → hypothesized → verified → refuted` | is this true? | hours of work against a host whose identity was assumed, never confirmed |
-| **exploitation** | `discovered → acquired → examined → exhausted` | have I used what I hold? | a credential acquired and never tried; five repos cloned, two read |
+**You stop being sure what is actually true.** Hours go into a host whose identity
+was assumed and never confirmed, or a route everyone believed worked and nobody
+tested.
 
-A document saying *"we have this credential"* cannot distinguish **have** from
-**tried**. Two fields can, and once they exist the interesting questions become
-queries:
+**You lose track of what you already hold.** A credential taken fifty moves ago
+and never tried against the service it opens. Five repositories cloned, two read.
+
+reckon tracks those separately on every item, so both become questions you can
+ask instead of things you hope you would notice:
 
 ```
 $ reckon unmined
@@ -31,62 +32,13 @@ $ reckon unmined
 ⚠ assist-svc (cred)            — acquired, never examined, 21 events
 ```
 
-A credential taken fifty moves ago and never tried against the service it opens
-is invisible in a notes file and obvious here.
+That is the whole idea: *have* and *tried* are different facts, and a document
+that records only the first cannot warn you about the second.
 
-## How it works
-
-### The model — and why not a BloodHound-style graph
-
-BloodHound is the mature example of the obvious shape: principals and computers
-are nodes, abuse primitives are edges, everything else hangs off as attributes.
-It is tighter than this.
-
-reckon takes a different rule — **anything that can be independently held and
-independently examined is a node** — because an attribute cannot carry state. If
-a credential is a property of an edge you cannot ask *"have I examined this?"*,
-and that question is the whole point.
-
-Nodes: `host` `cred` `service` `artifact` `finding` `assumption` `objective`
-`technique`. Edges assert that access exists, not how it was obtained, and carry
-their own epistemic state plus a privilege `rank` (`0` reach · `1` app · `2` shell
-· `3` admin).
-
-### Reachability
-
-Dijkstra over access edges, where an edge costs **0 if verified** and **1 if
-hypothesized**, keeping every non-dominated `(cost, rank)` pair:
-
-- `dist == 0` → reachable **now**
-- `dist >= 1` → reachable **if** — and the hypothesized edges on the path *are*
-  the assumptions to test
-- no path → unreachable; that needs discovery, not verification
-
-Keeping the pareto set matters: a host is routinely reachable cheaply-but-weakly
-over the network *and* expensively-but-privileged via an untested credential.
-Ranking those hypothesized edges by how many objectives each gates gives the
-cheapest next test for free.
-
-### Storage
-
-One append-only JSONL file per engagement under `engagements/`. State is a fold
-over the log, so history is never destroyed, a refuted conclusion is superseded
-rather than deleted, and any past moment can be replayed — which is what makes
-the retro metrics computable.
-
-Plain text is deliberate: an agent can read the file and append events directly,
-with no CLI round-trip.
-
-### Guarantees
-
-- **Concurrent-writer safe** — every append takes an exclusive `flock`, so a CLI
-  and an MCP server can share one log without colliding sequence numbers.
-- **O(1) appends** — sequence is read from the log tail, not by parsing it.
-- **Loud on write, lenient on read** — an invalid write is refused with the
-  reason; `fold` stays tolerant so older logs still load. `reckon state
-  host:TYPO verified` fails instead of printing success and recording nothing.
-- **Versioned log** — a log from a newer schema refuses to load rather than
-  being silently misread.
+| Axis | States | Question |
+|---|---|---|
+| **epistemic** | `unexplored → hypothesized → verified → refuted` | is this true? |
+| **exploitation** | `discovered → acquired → examined → exhausted` | have I used what I hold? |
 
 ## Install
 
@@ -95,6 +47,10 @@ git clone https://github.com/lieuphung-bb/reckon.git ~/projects/reckon
 export PATH="$HOME/projects/reckon/bin:$PATH"
 reckon ls
 ```
+
+One optional dependency, for one thing: `jq`, used by the hook that records tool
+activity. Without it that hook writes nothing, and the alarm for unrecorded work
+(below) can never fire. `reckon hook config` says so when it is missing.
 
 ## Try it
 
@@ -179,11 +135,45 @@ win is:
 | ⚠ BUDGET BLOWN | two failed attempts, no success — re-scope, do not retry |
 | ⚠ UNVERIFIED | a live path depends on something you assumed |
 
+Those describe the engagement. A second group describes **the instrument**, and
+it prints above everything else — if the record is behind the work, every
+section below it is a confident picture of an hour ago:
+
+| Alarm | Means |
+|---|---|
+| ⚠ STALE RECORDING | nothing has been recorded for 30 minutes |
+| ⚠ EMPTY DELTA | nothing since the last checkpoint — quiet, **or** unrecorded |
+| ★ UNRECORDED WORK | tool calls happened and none of them were written up |
+
+**UNRECORDED WORK is the one that pays for the rest.** reckon keeps its own
+automatic log of activity, independent of what anyone remembers to write down. It
+compares the two and raises this alarm when work happened but nothing was
+recorded — so a report can no longer look healthy just because reporting stopped.
+It also drafts the cleanup list of changes made to the target's systems, which a
+human confirms before anything is recorded.
+
 ```sh
 reckon delta      # what changed since you last looked — fixed size at any scale
 reckon board      # alarms, position, frontier, queue
 reckon queue      # the single test that unlocks the most
 reckon retro      # at close: what you left on the table
+```
+
+**When a session ends**, planned or not, reckon hands the next one a brief: where
+in the agreed plan the work stopped, what earlier steps already produced so nobody
+redoes them, and why the last step halted. A step cannot be marked done without
+recording what it produced, so results are not left stranded in a closed session's
+scrollback. And a blocked step must record *why* — ran out of context, hit a
+refusal, waiting on someone — because the right next move is different in each
+case.
+
+```sh
+reckon plan add obj:t7 "shadow-cred to DA" --step "dump hives" --step "PKINIT"
+reckon step done    <plan> 1 --produced cred:dcc2
+reckon step blocked <plan> 2 --reason refusal --note "declined to write the payload"
+
+reckon handoff    # ★ call this first when resuming — position alone re-derives a path you already have
+reckon fleet      # across agents: who has stopped without saying so
 ```
 
 ## Commands
@@ -200,12 +190,14 @@ reckon retro      # at close: what you left on the table
 | `reckon decide` | record a choice, what it ruled out, and why |
 | `reckon attempt` · `budget` | 2-strike failure budget, computed |
 | `reckon change` · `changes` · `cleaned` | what you altered on the target: the RoE cleanup list, and what a successor must not re-do |
+| `reckon changes --suggest` | drafts that cleanup list from what you actually ran — **proposals only**, nothing is recorded until you confirm |
 | `reckon plan add` · `plans` · `step` | the agreed path to an objective, and where in it you are |
 | `reckon handoff` · `fleet` | **the successor brief — resume point first**; who is where |
-| `reckon checkpoint` · `alarms` | the ritual as one command: delta, alarms, regenerate, stamp |
-| `reckon hook session-start` · `stop` | harness-invoked resume and end-of-session stamp; always exit 0 |
+| `reckon checkpoint` · `alarms` | one command for "where are we": what changed, what is wrong, documents rebuilt |
+| `reckon trace` | the record of what actually ran — **what makes "nothing happened" distinguishable from "nothing was written down"** |
+| `reckon hook session-start` · `stop` · `config` | harness-invoked resume and end-of-session stamp; always exit 0 |
 | `reckon recall` · `suggest` | techniques that worked on nodes like this before |
-| `reckon retro` | capability→realization latency, time-to-mine, calibration |
+| `reckon retro` | at close: how long wins sat unused, what was never looked at, how well-calibrated your confidence was |
 | `reckon import <dir>` | parse a markdown workspace into events |
 | `reckon views` · `console` | six generated documents · self-contained HTML |
 | `reckon mcp` | MCP server on stdio |
@@ -246,11 +238,10 @@ parsed. Imported objectives arrive without declared requirements and land in
 and "I cannot get there" call for different work. Declaring them is what turns an
 inventory into analysis.
 
-**Hooks** — `reckon hook session-start` and `reckon hook stop` are run by the
-harness, not by the agent, so they fire whether or not anything remembers. A rule
-in a prompt asking an agent to fetch its own brief is probabilistic and fails
-silently; that is exactly the remembering that does not happen when a session
-dies mid-step.
+**Hooks** — three, run by the harness rather than by the agent, so they fire
+whether or not anything remembers. A rule in a prompt asking an agent to fetch its
+own brief is probabilistic and fails silently; that is exactly the remembering
+that does not happen when a session dies mid-step.
 
 ```sh
 reckon hook config >> .claude/settings.json   # the fragment to paste; edit to merge
@@ -261,13 +252,80 @@ the cursor, what prior steps produced, why the last one stopped and what is owed
 `Stop` stamps a checkpoint, so the *next* brief reflects where work actually
 stopped rather than whenever someone last ran a checkpoint by hand.
 
-**These two commands invert the house rule, and it is the one place that happens.**
+`PostToolUse` records one line per action taken, giving reckon its own account of
+activity that does not depend on anyone writing anything down. That is what the
+unrecorded-work alarm compares against, and what `reckon changes --suggest` reads
+to draft the cleanup list.
+
+It is the only hook that is not a reckon command. It runs on *every* action, so it
+is a shell one-liner with no interpreter to start, and `jq` does the escaping and
+the length cap in one pass. **What it records never enters the graph** — it is
+evidence of what ran, and deciding what a command *meant* stays with the operator.
+
+**These commands invert the house rule, and it is the one place that happens.**
 Everywhere else an invalid input is refused loudly. A hook runs on the harness's
 schedule, so one that fails loudly takes a session down with it — a missing
 engagement, a corrupt log, a half-written config must all exit `0` and print
 nothing. `reckon handoff` on a corrupt log exits `1` with the reason;
 `reckon hook session-start` on the same log exits `0` in silence. That inversion
 is confined to `reckon/hooks.py`, which is why it is its own module.
+
+## Architecture
+
+Stdlib Python 3, no packages, no services. One append-only file per engagement;
+everything else is derived from it.
+
+### The model — and why not a BloodHound-style graph
+
+BloodHound is the mature example of the obvious shape: principals and computers
+are nodes, abuse primitives are edges, everything else hangs off as attributes.
+It is tighter than this.
+
+reckon takes a different rule — **anything that can be independently held and
+independently examined is a node** — because an attribute cannot carry state. If
+a credential is a property of an edge you cannot ask *"have I examined this?"*,
+and that question is the whole point.
+
+Nodes: `host` `cred` `service` `artifact` `finding` `assumption` `objective`
+`technique`. Edges assert that access exists, not how it was obtained, and carry
+their own epistemic state plus a privilege `rank` (`0` reach · `1` app · `2` shell
+· `3` admin).
+
+### Reachability
+
+Dijkstra over access edges, where an edge costs **0 if verified** and **1 if
+hypothesized**, keeping every non-dominated `(cost, rank)` pair:
+
+- `dist == 0` → reachable **now**
+- `dist >= 1` → reachable **if** — and the hypothesized edges on the path *are*
+  the assumptions to test
+- no path → unreachable; that needs discovery, not verification
+
+Keeping the pareto set matters: a host is routinely reachable cheaply-but-weakly
+over the network *and* expensively-but-privileged via an untested credential.
+Ranking those hypothesized edges by how many objectives each gates gives the
+cheapest next test for free.
+
+### Storage
+
+One append-only JSONL file per engagement under `engagements/`. State is a fold
+over the log, so history is never destroyed, a refuted conclusion is superseded
+rather than deleted, and any past moment can be replayed — which is what makes
+the retro metrics computable.
+
+Plain text is deliberate: an agent can read the file and append events directly,
+with no CLI round-trip.
+
+### Guarantees
+
+- **Concurrent-writer safe** — every append takes an exclusive `flock`, so a CLI
+  and an MCP server can share one log without colliding sequence numbers.
+- **O(1) appends** — sequence is read from the log tail, not by parsing it.
+- **Loud on write, lenient on read** — an invalid write is refused with the
+  reason; `fold` stays tolerant so older logs still load. `reckon state
+  host:TYPO verified` fails instead of printing success and recording nothing.
+- **Versioned log** — a log from a newer schema refuses to load rather than
+  being silently misread.
 
 ## Secrets
 

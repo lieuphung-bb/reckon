@@ -53,8 +53,52 @@ def path_for(name: str) -> str:
     return os.path.join(ENGAGEMENTS, f"{name}.jsonl")
 
 
+def trace_path_for(name: str) -> str:
+    """The §5.2 tool-call trace — a SEPARATE file from the event log.
+
+    Separate on three counts, and each is load-bearing: the volume is different
+    (hundreds of tool calls against dozens of events), the trust is different
+    (raw evidence against interpreted claims), and mixing them would make the
+    log unreadable by the human it is plain text for. Nothing here ever folds
+    into the graph.
+    """
+    path_for(name)                          # same name, same refusal
+    return os.path.join(ENGAGEMENTS, f"{name}.trace.jsonl")
+
+
 def exists(name: str) -> bool:
     return os.path.exists(path_for(name))
+
+
+def read_trace(name: str) -> list:
+    """Every parseable trace line, oldest first, each stamped with its 1-based
+    position as `seq` so a reader can say "since here".
+
+    **Tolerant, unlike `read_events`.** The event log is written by this
+    process under a lock, so a corrupt line there is a real defect and refusing
+    to read is correct. The trace is written by a shell one-liner on the
+    harness's schedule: a truncated final line means the machine went down
+    mid-append, not that the evidence is worthless. A skipped line costs one
+    tool call of resolution in an alarm whose unit is "dozens"; refusing the
+    file costs A3 entirely, which is the alarm that tells "quiet" from
+    "unrecorded".
+    """
+    path = trace_path_for(name)
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for i, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict):
+                out.append({**rec, "seq": i})
+    return out
 
 
 @contextmanager
@@ -181,4 +225,7 @@ def snapshot_at(name: str, seq: int):
 def list_engagements() -> list:
     if not os.path.isdir(ENGAGEMENTS):
         return []
-    return sorted(f[:-6] for f in os.listdir(ENGAGEMENTS) if f.endswith(".jsonl"))
+    # `<name>.trace.jsonl` sits in the same directory and also ends in .jsonl;
+    # without this it would list as an engagement called "<name>.trace".
+    return sorted(f[:-6] for f in os.listdir(ENGAGEMENTS)
+                  if f.endswith(".jsonl") and not f.endswith(".trace.jsonl"))

@@ -605,6 +605,108 @@ def changes(name, outstanding_only=True) -> list:
             if not (outstanding_only and c.cleaned)]
 
 
+# --- the tool-call trace (SPEC-004 §5.2, consumed per §5.4) -------------------
+
+def trace(name, since: int | None = None, limit: int | None = 100) -> list:
+    """The raw tool-call trail the harness appends, oldest first.
+
+    **Evidence, not interpretation** (§2). These lines are written by a shell
+    one-liner on every tool call and never fold into the graph; turning a
+    command into a finding needs judgment and stays with the agent. What they
+    are for is A3 — the one alarm that compares the log against an independent
+    signal of activity, and therefore the only one that can tell "nothing
+    happened" from "nothing was recorded".
+
+    `since` is a position cursor: each entry's `seq` is its line number, so
+    `since=40` reads "what happened after the fortieth call". `limit` takes the
+    most recent N; 0 or None reads the whole trail.
+
+    Deliberately absent from MCP. An agent re-reading its own command history is
+    a context-cost trap with almost no interpretive value, and A3 already
+    surfaces the only fact about it that changes a decision.
+    """
+    rows = store.read_trace(name)
+    if since is not None:
+        rows = [r for r in rows if r["seq"] > int(since)]
+    if limit and int(limit) > 0:
+        rows = rows[-int(limit):]
+    return rows
+
+
+# The §5.4 pattern set: commands that write a file or change state on the
+# target. Each pairs a match with the plainest description of what it implies,
+# because the proposal has to be readable as a ledger entry before anyone can
+# judge whether to confirm it.
+CHANGE_PATTERNS = (
+    ("sed -i",   r"\bsed\b[^|;&]*?\s-i\b",     "edited a file in place"),
+    ("tee",      r"\btee\b",                   "wrote to a file via tee"),
+    ("cp",       r"\bcp\b\s+\S",               "copied a file onto the target"),
+    ("mv",       r"\bmv\b\s+\S",               "moved or renamed a file"),
+    ("useradd",  r"\b(?:useradd|adduser)\b",   "created a local account"),
+    ("net user", r"\bnet\s+user\b",            "created or changed an account"),
+    ("reg add",  r"\breg\s+add\b",             "wrote a registry key"),
+    ("msiexec",  r"\bmsiexec\b",               "installed a package"),
+    ("schtasks", r"\bschtasks\b",              "created or changed a scheduled task"),
+    # Last, and narrowest: a redirect to somewhere that is not /dev/null, and
+    # not an fd-qualified one (`2>`, `2>&1`). Nearly every command in a real
+    # trace carries a diagnostic redirect, and a proposal list that is mostly
+    # noise is a list nobody reads. The cost is a missed `2>/tmp/loot`, which
+    # is the rarer case by a wide margin.
+    (">",        r"(?<![0-9])>>?\s*(?!/dev/null\b)(?:'[^']+'|\"[^\"]+\"|[^\s|;&<>]+)",
+     "wrote to a file"),
+)
+
+
+def suggest_changes(name) -> list:
+    """§5.4 — propose change-ledger entries from the trace.
+
+    **Proposals, never assertions.** Nothing is written; each entry carries the
+    command it came from and the `reckon change` line that would record it, and
+    a human or an agent decides. That is the same shape `ingest` and `recall`
+    already have, and it is required here rather than merely polite: a pattern
+    match is evidence about *relevance*, not about what actually changed on the
+    target. `cp a b` in a command that failed halfway may have changed
+    everything or nothing, and only the operator knows which.
+
+    The `target` is left empty on purpose. A shell command names paths and
+    hosts, not graph nodes, and guessing which node a write landed on is the
+    interpretation step §2 keeps with the agent.
+
+    A command already quoted verbatim in an existing ledger entry is dropped —
+    an exact substring check and nothing cleverer, so the list shrinks as you
+    confirm from it rather than repeating what you have already recorded.
+    """
+    import re
+    g = store.load(name)
+    recorded = " \n".join(f"{c.what} {c.revert_hint}" for c in g.changes)
+
+    seen, out = {}, []
+    for entry in store.read_trace(name):
+        cmd = str(entry.get("cmd") or "").strip()
+        if not cmd:
+            continue
+        if cmd in seen:                     # the same command run twice is one
+            seen[cmd]["count"] += 1         # entry to confirm, not two
+            continue
+        for label, pattern, what in CHANGE_PATTERNS:
+            if not re.search(pattern, cmd):
+                continue
+            if cmd in recorded:
+                break                       # already in the ledger, verbatim
+            proposal = {
+                "pattern": label, "what": what, "cmd": cmd,
+                "ts": entry.get("ts"), "seq": entry.get("seq"),
+                "agent": entry.get("agent") or "", "cwd": entry.get("cwd") or "",
+                "count": 1, "target": "",
+                "confirm": f'reckon change <target> "{what}" '
+                           f'--revert "<how>"',
+            }
+            seen[cmd] = proposal
+            out.append(proposal)
+            break                           # one proposal per command
+    return out
+
+
 def attempt(name, target_id, outcome="failed", note=""):
     """Record an attempt against a node or edge. Feeds the failure budget."""
     _one_of(outcome, ATTEMPT_OUTCOMES, "attempt outcome")
@@ -714,8 +816,8 @@ ALARM_REGISTRY = (
      "the graph is behind the work"),
     ("A2", "empty-delta", RECORDING, True,
      "nothing happened, OR nothing was recorded — A3 is what tells them apart"),
-    ("A3", "unrecorded-work", RECORDING, False,
-     "needs the PostToolUse trace (SPEC-004 §5.2), which is not built"),
+    ("A3", "unrecorded-work", RECORDING, True,
+     "work provably happened and none of it was interpreted"),
     ("A4", "done-without-produced", ENGAGEMENT, False,
      "computed by handoff already; not wired into the alarm set yet"),
     ("A5", "no-decision", ENGAGEMENT, True,
@@ -729,24 +831,61 @@ ALARM_REGISTRY = (
 DARK_ALARMS = tuple(a for a in ALARM_REGISTRY if not a[3])
 
 
-def _minutes_since_last_event(name):
-    """Age of the newest event in the log, in minutes, or None if empty."""
+def _parse_ts(value):
+    """A timestamp from either file, or None if it cannot be read.
+
+    The log writes `+00:00` and the trace's `jq` writes `Z`; both are the same
+    instant and both have to compare. None rather than an exception because one
+    caller is a tolerant reader over evidence written by a shell one-liner.
+    """
     from datetime import datetime, timezone
-    events = store.read_events(name)
-    if not events:
+    if not value:
         return None
-    for ev in reversed(events):
-        ts = ev.get("ts")
-        if not ts:
-            continue
-        try:
-            when = datetime.fromisoformat(ts)
-        except ValueError:
-            continue
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - when).total_seconds() / 60.0
+    try:
+        when = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def _last_authored_time(name):
+    """When the log last had something written to it, or None if never.
+
+    "Authored" means an event in the log. The checkpoint marker is a sidecar
+    file and not an event, so the Stop hook stamping a checkpoint does not reset
+    this clock — which is what keeps A3 honest at the end of a session.
+    """
+    for ev in reversed(store.read_events(name)):
+        when = _parse_ts(ev.get("ts"))
+        if when is not None:
+            return when
     return None
+
+
+def _minutes_since(when):
+    from datetime import datetime, timezone
+    return (datetime.now(timezone.utc) - when).total_seconds() / 60.0
+
+
+def _unrecorded_calls(name, cutoff):
+    """Trace entries newer than `cutoff`, the last authored event (§5.2 → A3).
+
+    A `cutoff` of None means nothing has been recorded at all, so every call is
+    unrecorded — the purest case of what A3 is for.
+
+    An entry whose timestamp will not parse is skipped rather than counted:
+    A3's whole claim is that work provably happened, and a line we cannot place
+    in time proves nothing. Under-reporting is the right failure here —
+    reporting on garbage is how an alarm loses its reader.
+    """
+    out = []
+    for entry in store.read_trace(name):
+        when = _parse_ts(entry.get("ts"))
+        if when is None:
+            continue
+        if cutoff is None or when > cutoff:
+            out.append((when, entry))
+    return out
 
 
 def alarms(name, since: int | None = None) -> list:
@@ -761,7 +900,10 @@ def alarms(name, since: int | None = None) -> list:
     frm = last_checkpoint(name) if since is None else since
     out = []
 
-    age = _minutes_since_last_event(name)
+    # Read once and share: A1 and A3 both measure against the same instant, and
+    # the log is the file this whole module is careful not to re-scan.
+    last_authored = _last_authored_time(name)
+    age = None if last_authored is None else _minutes_since(last_authored)
     if age is not None and age > STALE_RECORDING_MINUTES:
         out.append({
             "id": "A1", "name": "stale-recording", "group": RECORDING,
@@ -779,6 +921,31 @@ def alarms(name, since: int | None = None) -> list:
                    "happened or nothing was recorded, and this alarm cannot "
                    "tell you which (that is A3's job)",
             "detail": {"seq": g.seq, "since": frm}})
+
+    # A3 is the one that matters (§4.1). It is the only alarm comparing the log
+    # against an INDEPENDENT signal of activity, which is what makes "quiet" and
+    # "unrecorded" — identical to A2 — tell apart. No trace file, or an empty
+    # one, means no evidence either way, and it stays silent rather than
+    # guessing from a weaker signal.
+    unrecorded = _unrecorded_calls(name, last_authored)
+    if unrecorded:
+        # The age is how long the graph has been behind the work: since the last
+        # recorded event, or — when there has never been one — since the first
+        # call nobody recorded.
+        oldest = min(when for when, _e in unrecorded)
+        behind = int(_minutes_since(last_authored if last_authored is not None
+                                    else oldest))
+        out.append({
+            "id": "A3", "name": "unrecorded-work", "group": RECORDING,
+            "severity": "warn",
+            "why": f"{len(unrecorded)} tool call(s) since the last recorded "
+                   f"event ({behind}m) — work provably happened and none of it "
+                   "was interpreted; interpret before deciding",
+            "detail": {"tool_calls": len(unrecorded), "minutes": behind,
+                       "since": (last_authored.isoformat()
+                                 if last_authored else None),
+                       "last_call": max(when for when, _e in unrecorded)
+                                    .isoformat()}})
 
     if not [d for d in g.decisions if d.get("seq", 0) > frm]:
         out.append({
