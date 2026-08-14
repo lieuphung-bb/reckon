@@ -19,7 +19,7 @@ from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, STEP_STATUS,
                     BLOCKED_REASONS, BLOCKED_IMPLICATION)
 from .queries import (frontier, unrealized, unmined, stale, why,
                       verification_queue, budget)
-from .redact import redact_graph, redact_obj
+from .redact import redact_graph, redact_obj, redact_text
 from .render.board import board
 from .render.handoff import handoff as render_handoff, fleet as render_fleet
 from .render.checkpoint import checkpoint as render_checkpoint
@@ -324,6 +324,13 @@ def cmd_hook_stop(args):
 def cmd_hook_config(args):
     print(json.dumps(hooks.settings_fragment(
         engagement=args.name if args.pin else None), indent=2))
+    # stderr, and exit 0. stdout is pasted into .claude/settings.json, so a
+    # warning mixed into it breaks the paste; and this emits a config, it does
+    # not check one. But an unwritable trace has to be said out loud somewhere,
+    # and installing the hook is the moment it is cheapest to fix.
+    warning = hooks.trace_precondition()
+    if warning:
+        print(warning, file=sys.stderr)
 
 
 def cmd_checkpoint(args):
@@ -341,6 +348,43 @@ def cmd_alarms(args):
     text = "\n".join(f"{a['id']} {a['name']:<22} {a['why']}" for a in rows) \
         or "no alarms"
     _emit(args, rows, text)
+
+
+def _trace_text(rows):
+    if not rows:
+        out = ["no trace — the PostToolUse hook is not installed, or nothing "
+               "has run since it was\n(reckon hook config)"]
+        # The third cause, and the only one the operator cannot infer from
+        # anything else on screen: the hook is installed and silently writing
+        # nothing, because its one dependency is absent.
+        if hooks.trace_precondition():
+            out.append(f"note: {hooks.TRACE_DEPENDENCY} is not on PATH here, so "
+                       "an installed hook would write nothing either — that is "
+                       "the likeliest cause")
+        return "\n".join(out)
+    out = []
+    for r in rows:
+        head = f"{r.get('seq'):>5}  {r.get('ts', '')}  {r.get('tool', ''):<10}"
+        exit_code = r.get("exit")
+        if exit_code:
+            head += f" exit {exit_code}"
+        out.append(f"{head}  {r.get('cmd', '')}")
+    return "\n".join(out)
+
+
+def cmd_trace(args):
+    rows = api.trace(args.name, since=args.since, limit=args.limit)
+    # A raw command line is the most credential-dense text reckon holds — half
+    # of them carry a `-p`. Unredacted by default like everything else; masked
+    # on request for a copy that leaves this machine.
+    #
+    # Only the two fields that can carry a secret. A blanket mask reads
+    # `15:59:23Z` as a user:secret pair and leaves a trail stamped
+    # `15:«redacted»`, which is unreadable without protecting anything.
+    if getattr(args, "redact", False):
+        rows = [{**r, "cmd": redact_text(r.get("cmd", "")),
+                 "cwd": redact_text(r.get("cwd", ""))} for r in rows]
+    _emit(args, rows, _trace_text(rows))
 
 
 def cmd_fleet(args):
@@ -367,7 +411,33 @@ def _changes_text(rows):
     return "\n".join(out)
 
 
+def _suggestions_text(rows):
+    if not rows:
+        return ("nothing in the trace looks like a change to the target\n"
+                "(no trace at all? the PostToolUse hook writes it — reckon "
+                "hook config)")
+    out = [f"{len(rows)} proposal(s) from the trace. Nothing is recorded until "
+           "you confirm one —",
+           "a pattern match is evidence about relevance, not about what "
+           "changed on the target.", ""]
+    for r in rows:
+        times = f" ×{r['count']}" if r["count"] > 1 else ""
+        out.append(f"  {r['pattern']:<9} {r['what']}{times}")
+        out.append(f"    {r['cmd']}")
+        out.append(f"    → {r['confirm']}")
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
 def cmd_changes(args):
+    if getattr(args, "suggest", False):
+        # Reads the trace and proposes; writes nothing, like `ingest` and
+        # `recall`. The ledger only moves when someone runs the printed line.
+        rows = api.suggest_changes(args.name)
+        if getattr(args, "redact", False):
+            rows = redact_obj(rows)
+        _emit(args, rows, _suggestions_text(rows))
+        return
     rows = api.changes(args.name, outstanding_only=not args.all)
     if getattr(args, "redact", False):
         rows = redact_obj(rows)
@@ -608,6 +678,14 @@ def build_parser():
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_checkpoint)
 
+    s = sub.add_parser("trace", help="the raw tool-call trail (evidence for A3)")
+    s.add_argument("--since", type=int,
+                   help="entries after this trace seq (a line position)")
+    s.add_argument("--limit", type=int, default=100,
+                   help="most recent N (0 for all)")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--redact", action="store_true"); s.set_defaults(func=cmd_trace)
+
     s = sub.add_parser("alarms", help="the deterministic alarm set")
     s.add_argument("--json", action="store_true"); s.set_defaults(func=cmd_alarms)
 
@@ -652,6 +730,8 @@ def build_parser():
 
     s = sub.add_parser("changes", help="outstanding RoE cleanup")
     s.add_argument("--all", action="store_true", help="include cleaned entries")
+    s.add_argument("--suggest", action="store_true",
+                   help="propose ledger entries from the trace (writes nothing)")
     s.add_argument("--json", action="store_true")
     s.add_argument("--redact", action="store_true"); s.set_defaults(func=cmd_changes)
 

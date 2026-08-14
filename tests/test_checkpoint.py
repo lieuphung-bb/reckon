@@ -3,13 +3,16 @@
 The spec's argument is that a checkpoint depending on an agent remembering to
 record is one that will eventually render a beautiful, confident, hours-old
 picture. So every alarm here is computed from the log, and the tests care most
-about two things: that the two markers cannot satisfy each other, and that a
-dark alarm stays dark rather than being guessed at from a weaker signal.
+about two things: that the two markers cannot satisfy each other, and that an
+alarm fires on evidence rather than on a plausible-looking substitute for it.
 
-A2 vs A3 is the reason that second point matters. A2 cannot distinguish "nothing
-happened" from "nothing was recorded" — only A3 can, by comparing the log to an
-independent signal of activity. Until the trace exists, inferring A3 from
-anything else would be inventing the very confidence this spec exists to remove.
+A2 vs A3 is where the second point bites. A2 cannot distinguish "nothing
+happened" from "nothing was recorded" — only A3 can, by comparing the log
+against the trace, an independent signal of activity. So `TestA3` asserts both
+directions: it fires when the trace is newer than the last authored event, and
+it stays silent when there is no trace, because an alarm inferred without
+evidence would be inventing the very confidence this spec exists to remove.
+A4 and A6 remain dark, and say why.
 """
 
 import json
@@ -19,6 +22,7 @@ import unittest
 
 from reckon import api, mcp, store
 from reckon.render.checkpoint import checkpoint as render
+from tests import append_trace
 
 
 class Base(unittest.TestCase):
@@ -144,15 +148,127 @@ class TestAlarms(Base):
         self.assertNotIn("A7", [a["id"] for a in api.alarms("t")])
 
     def test_dark_alarms_stay_dark_and_say_why(self):
-        """§8.5's other half: A3 must NOT fire when there is no trace, because
-        'quiet' and 'unrecorded' are only distinguishable with one."""
         dark = {a[0] for a in api.DARK_ALARMS}
-        self.assertEqual(dark, {"A3", "A4", "A6"})
+        self.assertEqual(dark, {"A4", "A6"})
         for _ in range(3):
             self.assertFalse({a["id"] for a in api.alarms("t")} & dark)
         text = render(api.checkpoint("t", render=False))
         for aid in dark:
             self.assertIn(aid, text)        # visible as not-yet-computed
+
+
+class TestA3(Base):
+    """§8.5, the criterion the spec calls the real one.
+
+    A2 cannot distinguish "nothing happened" from "nothing was recorded" — both
+    are an empty delta, and they demand opposite responses. A3 resolves it, and
+    it is the only alarm that can, because it is the only one comparing the log
+    against an independent signal of activity.
+    """
+
+    def trace(self, *cmds, minutes_ago=None):
+        """Append trace lines as the §5.2 hook would have written them."""
+        at = None
+        if minutes_ago is not None:
+            from datetime import datetime, timedelta, timezone
+            at = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        return append_trace("t", *cmds, at=at)
+
+    def fired(self):
+        return [a["id"] for a in api.alarms("t")]
+
+    def test_A3_fires_when_the_trace_is_newer_than_the_last_recorded_event(self):
+        self.assertNotIn("A3", self.fired())
+        self.trace(*[f"nxc smb 10.99.10.{i}" for i in range(47)])
+
+        a3 = next(a for a in api.alarms("t") if a["id"] == "A3")
+        self.assertEqual(a3["group"], api.RECORDING)
+        self.assertEqual(a3["detail"]["tool_calls"], 47)
+        self.assertIn("47 tool call(s)", a3["why"])
+
+    def test_A3_does_not_fire_on_an_empty_or_absent_trace(self):
+        """The other direction, and the one that keeps 'quiet' meaningful: with
+        no independent signal there is no evidence either way, and guessing
+        from a weaker one is the confidence this spec exists to remove."""
+        self.assertFalse(os.path.exists(store.trace_path_for("t")))
+        self.assertNotIn("A3", self.fired())
+
+        open(store.trace_path_for("t"), "w").close()      # present but empty
+        self.assertNotIn("A3", self.fired())
+
+        with open(store.trace_path_for("t"), "a") as fh:  # and blank lines
+            fh.write("\n\n")
+        self.assertNotIn("A3", self.fired())
+
+    def test_recording_an_event_clears_A3(self):
+        """The remedy has to work, or the alarm is just noise."""
+        self.age_the_log(10)
+        self.trace("nxc smb 10.99.10.5", minutes_ago=5)
+        self.assertIn("A3", self.fired())
+
+        api.add_node("t", "cred", "j.rivera", node_id="cred:jr")
+        self.assertNotIn("A3", self.fired())
+
+    def test_A3_and_A2_separate_quiet_from_unrecorded(self):
+        """The whole argument of §4.1, as one test: two engagements with an
+        identical empty delta, told apart only by the trace."""
+        api.checkpoint("t", render=False)
+        self.assertEqual(self.fired().count("A2"), 1)
+        quiet = self.fired()
+
+        self.trace("smbclient -L //10.99.10.5", "hashcat -m 1000 h.txt")
+        unrecorded = self.fired()
+
+        self.assertNotIn("A3", quiet)
+        self.assertIn("A3", unrecorded)
+        self.assertIn("A2", unrecorded)       # the delta is empty in both cases
+
+    def test_a_stamped_checkpoint_does_not_silence_A3(self):
+        """The checkpoint marker is a sidecar file, not an event, so the Stop
+        hook's own checkpoint cannot reset the clock A3 measures against."""
+        self.trace("nxc smb 10.99.10.5")
+        api.checkpoint("t", render=False)
+        self.assertIn("A3", self.fired())
+
+    def test_A3_ignores_lines_it_cannot_place_in_time(self):
+        """A3 claims work provably happened. A line with no readable timestamp
+        proves nothing, and an alarm reporting on garbage loses its reader."""
+        with open(store.trace_path_for("t"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"tool": "Bash", "cmd": "id"}) + "\n")
+            fh.write(json.dumps({"ts": "not a date", "cmd": "id"}) + "\n")
+            fh.write("{ half a line, the machine went dow\n")
+        self.assertNotIn("A3", self.fired())
+
+        self.trace("id")                       # one line that does parse
+        self.assertEqual(
+            next(a for a in api.alarms("t") if a["id"] == "A3")
+            ["detail"]["tool_calls"], 1)
+
+    def test_A3_carries_the_count_and_the_age(self):
+        """§7's sample line: '47 tool calls since the last recorded event
+        (18m)'."""
+        self.age_the_log(18)
+        self.trace("id", "whoami")
+        a3 = next(a for a in api.alarms("t") if a["id"] == "A3")
+        self.assertEqual(a3["detail"]["tool_calls"], 2)
+        self.assertEqual(a3["detail"]["minutes"], 18)
+        self.assertIn("(18m)", a3["why"])
+
+    def test_A3_fires_when_nothing_at_all_has_been_recorded(self):
+        """An engagement with tool calls and an empty log is the purest case of
+        the failure the spec is about."""
+        store.create("fresh", force=True)
+        with open(store.trace_path_for("fresh"), "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": "2026-08-08T11:02:41Z", "tool": "Bash",
+                                 "cmd": "id", "exit": 0}) + "\n")
+        self.assertIn("A3", [a["id"] for a in api.alarms("fresh")])
+
+    def test_A3_prints_in_the_recording_health_section_above_everything(self):
+        self.trace("nxc smb 10.99.10.5")
+        text = render(api.checkpoint("t", render=False))
+        self.assertIn("A3 unrecorded-work", text)
+        self.assertLess(text.index("A3"), text.index("What changed"))
+        self.assertNotIn("A3", text.split("## Next")[-1])   # not in the dark list
 
 
 class TestStrict(Base):

@@ -10,6 +10,7 @@ So: build the parser, and route one command through each shape.
 """
 
 import argparse
+import json
 import os
 import io
 import tempfile
@@ -17,6 +18,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
 from reckon import api, cli, store
+from tests import append_trace
 
 
 def _subcommands(parser) -> dict:
@@ -70,7 +72,7 @@ class TestParser(unittest.TestCase):
         for expected in ("board", "plan add", "plan show", "plan supersede",
                          "plan step", "plan reassign", "plans", "step",
                          "change", "changes", "cleaned", "handoff", "fleet",
-                         "checkpoint", "alarms", "hook session-start",
+                         "checkpoint", "alarms", "trace", "hook session-start",
                          "hook stop", "hook config"):
             self.assertIn(expected, seen)
 
@@ -164,6 +166,82 @@ class TestCheckpointCommands(Base):
     def test_alarms_runs_on_its_own(self):
         self.run_cli("checkpoint", "--no-render")
         self.assertIn("A2", self.run_cli("alarms"))
+
+    def test_strict_exits_2_for_A3_alone(self):
+        """A3 is recording health, so it has to gate `--strict` on its own —
+        with A1 and A2 both quiet, an unrecorded stretch still fails a script."""
+        self.run_cli("checkpoint", "--no-render")          # stamp the marker
+        api.add_node("t", "cred", "x", node_id="cred:x")   # events since: A2 off
+        api.decide("t", "keep going", reason="quiets A5")
+        # --dry-run throughout, so checking the exit code does not re-stamp the
+        # marker and re-arm A2 underneath the assertion.
+        self.run_cli("checkpoint", "--no-render", "--dry-run", "--strict")
+
+        append_trace("t", "nxc smb 10.99.10.5", "hashcat -m 1000 h.txt")
+
+        fired = [a["id"] for a in api.alarms("t")]
+        self.assertEqual([a for a in fired if a in ("A1", "A2")], [])
+        self.assertIn("A3", fired)
+
+        with self.assertRaises(SystemExit) as cm:
+            self.run_cli("checkpoint", "--no-render", "--dry-run", "--strict")
+        self.assertEqual(cm.exception.code, 2)
+
+
+class TestTraceCommand(Base):
+    """§5.4 — reading the trail the §5.2 hook writes."""
+
+    def test_trace_prints_the_trail_and_says_so_when_there_is_none(self):
+        self.assertIn("no trace", self.run_cli("trace"))
+        append_trace("t", "nxc smb 10.99.10.5 -u j.rivera", "id")
+        out = self.run_cli("trace")
+        self.assertIn("nxc smb 10.99.10.5 -u j.rivera", out)
+        self.assertIn("id", out)
+
+    def test_since_and_limit_cut_the_trail(self):
+        append_trace("t", *[f"cmd-{i}" for i in range(10)])
+        self.assertNotIn("cmd-3", self.run_cli("trace", "--since", "5"))
+        self.assertIn("cmd-7", self.run_cli("trace", "--since", "5"))
+        self.assertEqual(len(self.run_cli("trace", "--limit", "2").splitlines()), 2)
+        self.assertEqual(len(self.run_cli("trace", "--limit", "0").splitlines()), 10)
+
+    def test_trace_can_be_redacted_for_a_copy_that_leaves_the_machine(self):
+        tok = "ghp_A1b2C3d4E5f6G7h8I9j0"
+        stamp = append_trace("t", f"curl -H 'Authorization: {tok}' https://git/api")
+        self.assertIn(tok, self.run_cli("trace"))
+
+        masked = self.run_cli("trace", "--redact")
+        self.assertNotIn(tok, masked)
+        self.assertIn("curl", masked)          # still a readable trail
+        self.assertIn(stamp, masked,
+                      "a blanket mask reads a timestamp as a user:secret pair")
+
+    def test_trace_json_is_machine_readable(self):
+        append_trace("t", "id")
+        rows = json.loads(self.run_cli("trace", "--json"))
+        self.assertEqual(rows[0]["cmd"], "id")
+        self.assertEqual(rows[0]["seq"], 1)
+
+
+class TestSuggestCommand(Base):
+    """§8.10 — proposals, never assertions."""
+
+    def test_suggest_proposes_and_writes_nothing(self):
+        append_trace("t", "sed -i s/x/y/ /etc/ssh/sshd_config", "id")
+        before = open(store.path_for("t")).read()
+
+        out = self.run_cli("changes", "--suggest")
+
+        self.assertIn("sed -i", out)
+        self.assertIn("reckon change", out)                 # how to confirm
+        self.assertEqual(open(store.path_for("t")).read(), before)
+        self.assertEqual(api.changes("t"), [])
+        self.assertEqual(self.run_cli("changes"),
+                         "no outstanding target changes")
+
+    def test_suggest_says_so_when_it_has_nothing_to_propose(self):
+        append_trace("t", "id", "whoami")
+        self.assertIn("nothing", self.run_cli("changes", "--suggest").lower())
 
 
 class TestChangeCommands(Base):
