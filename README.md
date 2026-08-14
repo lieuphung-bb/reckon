@@ -197,6 +197,7 @@ reckon fleet      # across agents: who has stopped without saying so
 | `reckon trace` | the record of what actually ran — **what makes "nothing happened" distinguishable from "nothing was written down"** |
 | `reckon hook session-start` · `stop` · `config` | harness-invoked resume and end-of-session stamp; always exit 0 |
 | `reckon recall` · `suggest` | techniques that worked on nodes like this before |
+| `reckon ref` | tag a node with a catalog id — ATLAS, CVE — and show its canonical name |
 | `reckon retro` | at close: how long wins sat unused, what was never looked at, how well-calibrated your confidence was |
 | `reckon import <dir>` | parse a markdown workspace into events |
 | `reckon views` · `console` | six generated documents · self-contained HTML |
@@ -344,16 +345,34 @@ It is a courtesy, not a control.
 
 ## Reference layer
 
-`reckon.reference` is a seam to an external CVE/technique layer, deliberately
-implementation-free: the core imports no database driver and no MCP client. It
-encodes one rule about how external knowledge may enter the graph:
+A technique or CVE id recorded against a node shows its canonical name, read from
+a reference file you point at. Only the id is stored, so the source can change
+without touching engagement data — and an id the source does not contain is
+refused when you write it, rather than resolving to nothing forever.
 
-| Store | Access | Enters as |
+```sh
+export RECKON_REFERENCES="atlas=~/ref/atlas-techniques.md"
+reckon ref service:assist-chat atlas technique AML.T0051.001
+```
+
+A source is any markdown holding a two-column table of `` | `id` | name | ``
+rows; anything wider or without the code span is prose and is ignored. Name each
+source as `store=path` and separate several with `:`, as you would a `$PATH`.
+Lookups are by id, so the label you record is provenance and is not checked
+against a file source.
+
+**reckon ships the reader, never the corpus.** Point it at what you have — your
+own catalog, or a public one you keep current. Nothing is configured by default
+and the tool behaves exactly as it does without this feature.
+
+One rule governs how external knowledge enters the graph, and it holds whatever
+the source is:
+
+| Source | Access | Enters as |
 |---|---|---|
-| Neo4j (CVE/CWE/CAPEC) | deterministic, resolve by `(label, key)` | may be **verified** — curated taxonomy |
-| Vector KB | semantic only, no stable ids | **hypothesis, confidence D** — a cosine distance is not evidence |
+| An id table — a file today, a graph later | deterministic, resolve by a stable id | may be **verified** — a curated taxonomy is a fact you can cite |
+| Semantic search | no stable ids to join on | **hypothesis, confidence D** — a cosine distance is not evidence |
 
-`NullResolver` is the default, so the core runs identically with nothing wired.
 Reads are one-way: engagement learnings never flow back automatically, so a messy
 live engagement cannot pollute curated knowledge.
 
