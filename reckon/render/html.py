@@ -16,6 +16,7 @@ import re
 from ..queries import (frontier, unrealized, unmined, stale, coverage, reach,
                        verification_queue, why, budget)
 from ..recall import suggestions as _suggestions
+from ..reference import get_resolver
 from ..render.views import RENDERERS
 
 
@@ -346,7 +347,30 @@ def _mermaidless_svg(g, r, nodes_meta):
     return "".join(parts)
 
 
+def _references(node, resolver):
+    """The node's references, each with its canonical name where one is known.
+
+    The graph stores only `(store, label, key)` — the id and nothing else, so a
+    source can change without touching recorded data. The name is looked up at
+    render time and is never written back. Unresolved is not a failure: the
+    triple still reads as provenance, which is what it was recorded for.
+    """
+    out = []
+    for ref in node.props.get("references") or []:
+        ref = dict(ref)
+        try:
+            found = resolver.resolve(ref.get("store", ""), ref.get("label", ""),
+                                     ref.get("key", "")) or {}
+        except Exception:               # a broken source must not break the page
+            found = {}
+        if found.get("title"):
+            ref["title"] = found["title"]
+        out.append(ref)
+    return out
+
+
 def console(g, name: str) -> str:
+    resolver = get_resolver()
     r = reach(g)
     f, ur, um, st = frontier(g), unrealized(g), unmined(g), stale(g)
     cov, vq = coverage(g), verification_queue(g)
@@ -397,7 +421,7 @@ def console(g, name: str) -> str:
             "status": n.status, "props": n.props, "notes": n.notes,
             "alarms": alarms,
             "objectives": needs.get(nid, []),
-            "references": n.props.get("references") or [],
+            "references": _references(n, resolver),
             "recall": sug.get(nid, []),
             "attempts": n.attempts,
             "path": [{"from": g.edges[e].src, "to": g.edges[e].dst,

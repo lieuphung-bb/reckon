@@ -170,7 +170,12 @@ def supersede(name, old_id, new_id, reason=""):
 
 
 def add_reference(name, target_id, store_name, label, key):
-    """Point an engagement node at the curated reference layer (phase 2)."""
+    """Point an engagement node at the curated reference layer.
+
+    Only the `(store, label, key)` triple is recorded — never the resolved name
+    — so a reference source can change without touching engagement data. Where
+    the store can be asked, `make_reference` refuses an id it does not contain.
+    """
     _require_nodes(name, [target_id])
     ref = make_reference(store_name, label, key)
     g = store.load(name)
