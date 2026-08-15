@@ -23,8 +23,7 @@ from .redact import redact_graph, redact_obj, redact_text
 from .render.board import board
 from .render.handoff import handoff as render_handoff, fleet as render_fleet
 from .render.checkpoint import checkpoint as render_checkpoint
-from .render.html import console as html_console
-from .render.views import render_all, VIEWS
+from .render.views import VIEWS
 
 
 def _kv(pairs):
@@ -176,21 +175,14 @@ def cmd_why(args):
 
 
 def cmd_views(args):
-    g = _graph(args)
     out_dir = args.out or os.path.join(store.OUT, args.name)
-    os.makedirs(out_dir, exist_ok=True)
-    for view, text in render_all(g, args.name).items():
-        with open(os.path.join(out_dir, f"{view}.md"), "w") as fh:
-            fh.write(text)
+    api.render_views(_graph(args), args.name, out_dir)
     print(f"wrote {len(VIEWS)} views -> {out_dir}")
 
 
 def cmd_console(args):
-    g = _graph(args)
     out = args.out or os.path.join(store.OUT, f"{args.name}.html")
-    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    with open(out, "w") as fh:
-        fh.write(html_console(g, args.name))
+    api.render_console(_graph(args), args.name, out)
     if not args.redact:
         print("note: secrets render in full — local use only, never publish "
               "(re-run with --redact for a shareable copy)", file=sys.stderr)
@@ -760,6 +752,22 @@ def build_parser():
     return p
 
 
+# The commands that change the log, and so leave the board behind the work.
+# One set here rather than a call appended to twenty handlers: `main` is the
+# CLI's interactive boundary, and a handler that forgot the call is exactly the
+# staleness this exists to remove.
+#
+# `checkpoint` is absent because it regenerates already, `hook stop` because it
+# runs on the harness's schedule and deliberately does not render, and `new`
+# because it creates an empty engagement — there is no board to be behind, and
+# the name it targets is a positional rather than `-e`.
+WRITE_COMMANDS = frozenset({
+    cmd_add, cmd_edge, cmd_state, cmd_hold, cmd_examine, cmd_obj, cmd_note,
+    cmd_supersede, cmd_ref, cmd_apply, cmd_import, cmd_decide, cmd_attempt,
+    cmd_plan_add, cmd_plan_supersede, cmd_step, cmd_step_add, cmd_plan_reassign,
+    cmd_change, cmd_cleaned})
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
@@ -767,6 +775,9 @@ def main(argv=None):
     except (api.ValidationError, store.StoreError, ingest.IngestError,
             reference.ReferenceError, FileNotFoundError) as exc:
         sys.exit(f"reckon: {exc}")
+    # Only past the exception handler: a refused write renders nothing.
+    if args.func in WRITE_COMMANDS:
+        api.autorender(args.name)
 
 
 if __name__ == "__main__":

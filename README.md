@@ -69,6 +69,7 @@ Everything reckon reads from the environment, in one place:
 | `RECKON_CURRENT` | none | default engagement, so `-e` can be omitted |
 | `RECKON_REFERENCES` | none | catalog sources, `store=path`, `:`-separated |
 | `RECKON_AGENT` | none | who is recording, when several agents share an engagement |
+| `RECKON_AUTORENDER` | off | `1`/`true`/`yes`/`on`: regenerate the board after every write |
 
 ## Try it
 
@@ -105,6 +106,7 @@ examples/*.json                    input fixtures, tracked, in the repo
 <data root>/engagements/<name>.jsonl   the source of truth: append-only log
         ↓ reckon console / views
 <data root>/out/<name>.html + views    derived, regenerated on demand
+                                       (or after every write — see below)
 ```
 
 The data root is `~/.local/share/reckon` unless you moved it. Only the event log
@@ -195,6 +197,94 @@ reckon handoff    # ★ call this first when resuming — position alone re-deri
 reckon fleet      # across agents: who has stopped without saying so
 ```
 
+## Working with an agent
+
+Three surfaces, and they answer different questions. Keeping them apart is what
+makes the arrangement work:
+
+| Surface | What it is for |
+|---|---|
+| **the chat** | judging the reasoning — an argument, persuasive whether or not it is right |
+| **the board** — the HTML console | a mirror of what has actually been recorded, and nothing else |
+| **the event log** | the truth both of the others are derived from |
+
+An agent's account of an engagement is convincing by construction. The board is
+not trying to convince you of anything: it shows what is in the log, so a claim
+made in chat and never recorded is visibly absent from it. That is the check —
+and it only works if the board in front of you is current.
+
+```sh
+export RECKON_AUTORENDER=1
+```
+
+With that set, every write regenerates the console and the six views. The loop
+becomes: **the agent proposes → you agree → the agent records → the board updates
+itself.** Nobody has to remember "and then checkpoint".
+
+Off by default: one render per write is a cost, and if you are not watching a
+board you should not pay it. Leave it unset and the console regenerates when you
+ask for it, exactly as before. Pair it with **⟳ auto** in the console, which
+reloads the open tab every 5s, and the page in front of you tracks the log
+without a keystroke.
+
+Two things it deliberately does not change. Rendering never affects recording:
+if a render fails, the write still stands and the fact is still in the log — a
+broken board must never cost you a recorded fact. And `reckon checkpoint` is
+still the ritual for alarms, the delta and the stamp; what autorender removes is
+running it *only* to refresh a stale page.
+
+### Which tab answers which question
+
+`reckon console` puts seven tabs across the top. They are not variations on one
+page — each answers a different question, and knowing which is which is the
+difference between finding a recorded decision and re-deciding it:
+
+| Tab | Answers |
+|---|---|
+| **board** | where you stand: every node, grouped by zone, alarms on the cards |
+| **chain** | how the access you hold connects, and which links are still assumed |
+| **brief** | what was decided and what to do next — **the decision log lives here** |
+| **assumptions** | what is believed and not yet verified |
+| **threat model** | what the target's exposure looks like from what you found |
+| **plan** | the agreed path to an objective, and where in it the work stopped |
+| **recon** | what has been seen, host by host |
+
+Six of them are also written as markdown next to the console, for anything that
+reads files rather than a browser — `board` as `topology.md`, `brief` as
+`attack_brief.md`, the rest under their own names. `chain` is drawn in the page
+and has no file.
+
+### Priming the agent to record
+
+Autorender renders what was recorded. It never records — that part needs
+judgment about what was chosen and what it ruled out, and it stays with the
+agent. What makes it happen is an instruction, so put one in the file your agent
+already reads (`AGENTS.md`, `CLAUDE.md`, or whatever your tool uses). Copy this:
+
+```markdown
+## Recording to reckon
+
+Record as you work, not at the end. The board is only as current as the log.
+
+- **At every decision point, call `decide` before acting on it** — what you
+  chose, what you ruled out, and why. A decision that is not recorded gets
+  re-argued in three hours by someone who cannot see it.
+- Record a finding when you find it: `add_node` for anything you can hold or
+  examine, `add_edge` for access you believe exists.
+- An edge you have not tested is `hypothesized`, not `verified`. Marking it
+  verified because it looks right is the one thing that makes the board lie.
+- `examine` means you actually went through it. Not glanced at it.
+- On a plan step, `step_state ... done` with `produced` — the node ids the step
+  created. A step whose output is not in the graph leaves the next session to
+  redo the work.
+- If you are unsure whether something is worth recording, record it.
+```
+
+That block is an **example to copy**, not a file this repo ships. The engagement
+runs in your working directory, not in the reckon checkout, so an instruction
+file living here would never be loaded. `AGENTS.md` is the cross-tool convention
+if you want one file several agents read.
+
 ## Commands
 
 | Command | Question |
@@ -226,10 +316,12 @@ reckon fleet      # across agents: who has stopped without saying so
 
 **Console** — `reckon console` emits a self-contained offline page: zone-grouped
 board, click-to-expand drawer per node, layered chain graph, filter chips, and the
-six views as tabs. Colours are derived from the Dijkstra result, with
+six views as tabs — [which tab answers which question](#which-tab-answers-which-question)
+is mapped above. Colours are derived from the Dijkstra result, with
 `reachable-if` its own colour because "I could do this if one assumption holds" is
 a different thing from "I can do this". Click **⟳ auto** to have the tab reload
-every 5s and pick up each regeneration.
+every 5s and pick up each regeneration; with `RECKON_AUTORENDER=1` there is a
+regeneration to pick up after every write.
 
 **Views** — `reckon views` regenerates `topology` `assumptions` `attack_brief`
 `recon` `threat_model` `plan` from the one graph. Because they are derived they
@@ -250,11 +342,14 @@ with your agent and it is spawned per session:
   "command": "/path/to/reckon/bin/reckon",
   "args": ["mcp"],
   "env": {"RECKON_HOME": "/home/you/.local/share/reckon",
+          "RECKON_AUTORENDER": "1",
           "RECKON_REFERENCES": "atlas=/home/you/ref/atlas-techniques.md"}}}}
 ```
 
 The subprocess inherits the agent's environment, not your shell's, so anything
 you set in a profile is absent here — set it in `env` or it is not set at all.
+`RECKON_AUTORENDER` is the one people miss: exported in a shell it has no effect
+on the agent's writes, and the board sits still while the log fills up.
 
 **Leave `RECKON_CURRENT` out** and pass `engagement` per call: a stale default
 sends a session's records to the wrong engagement, silently.
