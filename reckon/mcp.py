@@ -147,7 +147,31 @@ def _eng(args):
     return args.get("engagement") or os.environ.get("RECKON_CURRENT", "default")
 
 
+# The tools that change the log. `checkpoint` is absent because it regenerates
+# already, and every read is absent because a read must never write: autorender
+# is a consequence of recording something, not of looking at it.
+WRITE_TOOLS = frozenset({
+    "add_node", "add_edge", "set_state", "examine", "set_objective", "attempt",
+    "decide", "note", "plan_add", "step_state", "change"})
+
+
 def dispatch(tool: str, args: dict):
+    """One tool call, plus the board that follows it when the call was a write.
+
+    This is one of the two interactive boundaries where autorender belongs. Not
+    `store.append`, which sits below `render` and would fire per event rather
+    than per logical write; not each `api` write function, which would render
+    for tests and direct callers that never asked for it.
+    """
+    result = _dispatch(tool, args)
+    if tool in WRITE_TOOLS:
+        # After the call returned, so a refused write renders nothing, and
+        # never in a way that can turn a successful write into a failure.
+        api.autorender(_eng(args))
+    return result
+
+
+def _dispatch(tool: str, args: dict):
     name = _eng(args)
     if tool == "status":
         return api.status(name)

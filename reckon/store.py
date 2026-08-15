@@ -66,6 +66,24 @@ def _resolve_out(env=None) -> str:
         _resolve_home(env), "out")
 
 
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def autorender_enabled(env=None) -> bool:
+    """Whether a successful write should regenerate the board: `$RECKON_AUTORENDER`.
+
+    Default off, so an unset variable is exactly today's behaviour and someone
+    who does not keep a console open pays nothing.
+
+    Read at call time rather than frozen into a module constant like `OUT`,
+    because this one is a per-session preference — an operator turns it on for
+    the session they are watching a board in, and a test turns it on for the
+    case that needs it.
+    """
+    env = os.environ if env is None else env
+    return (env.get("RECKON_AUTORENDER") or "").strip().lower() in _TRUTHY
+
+
 RECKON_HOME = _resolve_home()
 ENGAGEMENTS = os.path.join(RECKON_HOME, "engagements")
 # The one place the output location is resolved. Callers read `OUT`; nothing

@@ -972,6 +972,81 @@ def alarms(name, since: int | None = None) -> list:
     return out
 
 
+# --- rendering ----------------------------------------------------------------
+#
+# One renderer, so the three surfaces that regenerate documents — `checkpoint`,
+# the `console`/`views` commands, and anything else that asks for a refresh —
+# cannot drift into producing different files from the same graph. The two
+# halves are separate functions only because the CLI can aim each at its own
+# destination; the text itself is produced in exactly one place per artifact.
+
+def render_console(g, name, path) -> str:
+    """Write the HTML console for `g` to `path`. Returns the path written."""
+    import os
+    from .render.html import console as html_console
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(html_console(g, name))
+    return path
+
+
+def render_views(g, name, out_dir) -> list:
+    """Write the six markdown views for `g` into `out_dir`. Returns the paths."""
+    import os
+    from .render.views import render_all
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for view, text in render_all(g, name).items():
+        path = os.path.join(out_dir, f"{view}.md")
+        with open(path, "w") as fh:
+            fh.write(text)
+        written.append(path)
+    return written
+
+
+def render_board(name, g=None, out_dir=None) -> list:
+    """Regenerate the whole board — console plus the six views — into `out_dir`.
+
+    Defaults to `store.OUT`, which is where ADR-002 says rendered artifacts
+    live; the CLI's per-call `--out` is the only thing that moves them.
+    """
+    import os
+    from .render.views import VIEWS
+    g = store.load(name) if g is None else g
+    out_dir = store.OUT if out_dir is None else out_dir
+    html = render_console(g, name, os.path.join(out_dir, f"{name}.html"))
+    render_views(g, name, os.path.join(out_dir, name))
+    # Ordered by VIEWS rather than by what the write loop returned, so the
+    # reported list is stable whatever order `render_all` yields.
+    return [html] + [os.path.join(out_dir, name, f"{v}.md") for v in VIEWS]
+
+
+def autorender(name) -> list:
+    """Regenerate the board after a write, if `$RECKON_AUTORENDER` is on.
+
+    **Never raises**, and that is the whole contract. Everywhere else in reckon
+    a failure is loud, for the reason `api`'s docstring gives; here it must not
+    be, and the reason is the same one `hooks` inverts the rule for. This runs
+    as a consequence of a write the caller already made and the log already
+    holds. If rendering throws, the fact is recorded either way — reporting the
+    write as failed would be a lie about the log, and the caller might then
+    record it twice. A broken renderer costs a stale board, never a fact.
+
+    Returns the paths written, or `[]` when the flag is off or a render failed.
+    """
+    if not store.autorender_enabled():
+        return []
+    try:
+        return render_board(name)
+    except Exception as exc:
+        import sys
+        # stderr, never stdout: on the CLI stdout is what a caller parses, and
+        # on the MCP server it is the JSON-RPC transport itself.
+        print(f"reckon: autorender failed ({type(exc).__name__}: {exc}); "
+              f"the write is recorded, the board is stale", file=sys.stderr)
+        return []
+
+
 def checkpoint(name, render=True, strict=False, dry_run=False,
                agent=None) -> dict:
     """The ritual, as one command with no judgment in it.
@@ -988,21 +1063,7 @@ def checkpoint(name, render=True, strict=False, dry_run=False,
     changed = delta(name, since=frm, stamp=False)
     fired = alarms(name, since=frm)
 
-    rendered = []
-    if render:
-        from .render.views import render_all, VIEWS
-        from .render.html import console as html_console
-        import os
-        out_dir = store.OUT
-        os.makedirs(os.path.join(out_dir, name), exist_ok=True)
-        for view, text in render_all(g, name).items():
-            with open(os.path.join(out_dir, name, f"{view}.md"), "w") as fh:
-                fh.write(text)
-        html = os.path.join(out_dir, f"{name}.html")
-        with open(html, "w") as fh:
-            fh.write(html_console(g, name))
-        rendered = [html] + [os.path.join(out_dir, name, f"{v}.md")
-                             for v in VIEWS]
+    rendered = render_board(name, g=g) if render else []
 
     if not dry_run:
         stamp_checkpoint(name, g.seq)
