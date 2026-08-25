@@ -113,7 +113,11 @@ def cmd_apply(args):
 
 
 def cmd_import(args):
-    events = ingest.from_workspace(args.path)
+    # A workspace is markdown a human wrote; a scan is XML a tool wrote. Same
+    # destination, different reader -- and the reader is chosen explicitly rather
+    # than sniffed, so a mis-parse is never silent.
+    events = (ingest.from_nmap(args.path) if args.nmap
+              else ingest.from_workspace(args.path))
     if args.fresh:
         store.create(args.name, force=True)
     n = api.apply_events(args.name, events)
@@ -580,7 +584,10 @@ def build_parser():
     s = sub.add_parser("apply"); s.add_argument("file"); s.set_defaults(func=cmd_apply)
 
     s = sub.add_parser("import"); s.add_argument("path")
-    s.add_argument("--fresh", action="store_true"); s.set_defaults(func=cmd_import)
+    s.add_argument("--fresh", action="store_true")
+    s.add_argument("--nmap", action="store_true",
+                   help="read an nmap -oX file instead of a workspace directory")
+    s.set_defaults(func=cmd_import)
 
     for nm, fn in (("board", cmd_board), ("retro", cmd_retro),
                    ("status", cmd_status)):

@@ -308,7 +308,7 @@ if you want one file several agents read.
 | `reckon recall` · `suggest` | techniques that worked on nodes like this before |
 | `reckon ref` | tag a node with a catalog id — ATLAS, CVE — and show its canonical name |
 | `reckon retro` | at close: how long wins sat unused, what was never looked at, how well-calibrated your confidence was |
-| `reckon import <dir>` | parse a markdown workspace into events |
+| `reckon import <dir>` · `import --nmap <file>` | parse a markdown workspace, or an `nmap -oX` scan, into events |
 | `reckon views` · `console` | six generated documents · self-contained HTML |
 | `reckon mcp` | MCP server on stdio |
 
@@ -369,6 +369,18 @@ parsed. Imported objectives arrive without declared requirements and land in
 `undeclared` — separate from `unreachable`, because "nobody said what this needs"
 and "I cannot get there" call for different work. Declaring them is what turns an
 inventory into analysis.
+
+`reckon import --nmap` reads an `nmap -oX` scan instead: hosts up become hosts,
+open ports become services that require them. Confidence follows the evidence —
+`A` when `-sV` returned a product and version, `B` for a product alone, `C` for
+nmap's guess from the port number. `filtered` and `closed` ports are not imported
+at all; in a graph built to separate *absence of evidence* from *evidence of
+absence*, recording them as services would destroy the distinction. Hosts stay
+`discovered`: a scan proves reachability, not access.
+
+The reason to import a scan rather than write the nodes by hand is the same reason
+hooks exist below. An engagement ran to completion with an empty graph because
+"record what you find" was an instruction rather than an event.
 
 **Hooks** — three, run by the harness rather than by the agent, so they fire
 whether or not anything remembers. A rule in a prompt asking an agent to fetch its
