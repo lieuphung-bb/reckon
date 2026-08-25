@@ -326,3 +326,116 @@ def from_workspace(path: str) -> list:
                 events.append({"op": "note", "args": {
                     "target_id": nid, "text": "from a superseded checklist"}})
     return events
+
+
+# --- nmap ---------------------------------------------------------------------
+
+# A scan is the one recon artifact that is already structured, already run first,
+# and already trustworthy about what answered. Importing it seeds the graph before
+# any agent decides to record anything -- which is the point: recording that depends
+# on remembering does not happen (an engagement ran to completion with an empty
+# graph because "write your findings" was an ambient instruction).
+#
+# Deliberately narrow: hosts and services, nothing inferred. A scan says what
+# answered and what it claimed to be. It does not say what is exploitable, and
+# guessing here would put confident-looking nodes in front of the operator.
+
+_NMAP_CONF = {
+    "version": "A",   # product AND version from -sV: a banner we read
+    "product": "B",   # product only
+    "name":    "C",   # nmap's port-number guess, no -sV evidence
+}
+
+
+def _nmap_service_label(sv):
+    """`http nginx 1.18.0` from whatever -sV actually returned."""
+    parts = [sv.get(k, "").strip() for k in ("name", "product", "version")]
+    return " ".join(p for p in parts if p)[:48]
+
+
+def _nmap_conf(sv):
+    if sv.get("version"):
+        return _NMAP_CONF["version"]
+    if sv.get("product"):
+        return _NMAP_CONF["product"]
+    return _NMAP_CONF["name"]
+
+
+def from_nmap(path: str) -> list:
+    """Read an `nmap -oX` file -> event list.
+
+    Only `state="up"` hosts and `state="open"` ports become nodes. `filtered` is
+    the absence of evidence, not evidence of absence, and belongs nowhere in a
+    graph whose whole job is to distinguish the two.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as e:
+        raise IngestError(f"{path} is not readable nmap XML: {e}") from e
+    if root.tag != "nmaprun":
+        raise IngestError(f"{path} is not an nmap run (root <{root.tag}>)")
+
+    args = root.get("args", "")
+    events, hosts, services = [], 0, 0
+
+    for h in root.findall("host"):
+        st = h.find("status")
+        if st is not None and st.get("state") != "up":
+            continue
+
+        addrs = {a.get("addrtype"): a.get("addr") for a in h.findall("address")}
+        ip = addrs.get("ipv4") or addrs.get("ipv6") or ""
+        names = [n.get("name") for n in h.findall("hostnames/hostname")
+                 if n.get("name")]
+        label = (names[0] if names else ip)
+        if not label:
+            continue                      # a host with neither name nor address
+
+        hid = _slug("host", label)
+        props = {k: v for k, v in (("ip", ip), ("mac", addrs.get("mac", "")),
+                                   ("hostnames", ", ".join(names))) if v}
+        events.append({"op": "add_node", "args": {
+            "id": hid, "kind": "host", "label": label[:48],
+            # The scan reached it. That is a verified fact about reachability and
+            # nothing more -- exploitation stays `discovered`, as in from_workspace.
+            "epistemic": "verified", "confidence": "A",
+            "source": f"nmap {args}".strip()[:80], "props": props}})
+        events.append({"op": "add_edge", "args": {
+            "id": f"e:op-{hid}", "src": "operator:me", "dst": hid,
+            "rel": "grants-access-to", "epistemic": "verified",
+            "props": {"rank": 0, "privilege": "network reach"}}})
+        hosts += 1
+
+        for port in h.findall("ports/port"):
+            pst = port.find("state")
+            if pst is None or pst.get("state") != "open":
+                continue
+            num, proto = port.get("portid", ""), port.get("protocol", "tcp")
+            sv = {k: (port.find("service").get(k) or "")
+                  for k in ("name", "product", "version", "extrainfo")} \
+                if port.find("service") is not None else {}
+            svc = _nmap_service_label(sv) or f"{proto}/{num}"
+            sid = _slug("service", f"{label}-{num}-{sv.get('name') or proto}")
+            events.append({"op": "add_node", "args": {
+                "id": sid, "kind": "service", "label": f"{svc} :{num}"[:48],
+                "epistemic": "verified", "confidence": _nmap_conf(sv),
+                "source": f"nmap {args}".strip()[:80],
+                # apply_events appends payloads verbatim -- it does not call
+                # api.add_node -- so `requires` is folded into props here, in the
+                # shape parse_requires would have produced.
+                "props": dict({k: v for k, v in (
+                    ("port", num), ("proto", proto), ("host", label),
+                    ("product", sv.get("product", "")),
+                    ("version", sv.get("version", "")),
+                    ("extrainfo", sv.get("extrainfo", ""))) if v},
+                    requires=[{"target": hid, "min_rank": 0}])}})
+            events.append({"op": "add_edge", "args": {
+                "id": f"e:{hid}-{sid}", "src": hid, "dst": sid,
+                "rel": "hosts", "epistemic": "verified", "props": {"port": num}}})
+            services += 1
+
+    if not hosts:
+        raise IngestError(f"{path} has no hosts up -- nothing to import")
+    return events
