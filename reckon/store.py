@@ -235,7 +235,16 @@ def append_many(name: str, events: list, by: str | None = None) -> list:
     `by` is authorship: which agent wrote this. It is what makes "the last
     authored event" answerable, so a fleet view can show an agent that has gone
     quiet. A per-event `by` overrides the batch default.
+
+    An unset `by` falls back to $RECKON_AGENT here rather than at each call site.
+    It used to be resolved in api.py, but only the plan and change verbs passed it
+    on, so every graph write -- add_node, add_edge, decide, examine -- landed
+    unattributed. A harness that exports the variable could then not tell its own
+    adjudication from an agent recording its own success, which is the difference
+    the variable exists to capture. One choke point cannot be forgotten by a new
+    call site.
     """
+    by = by or os.environ.get("RECKON_AGENT") or None
     path = path_for(name)
     os.makedirs(ENGAGEMENTS, exist_ok=True)
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
