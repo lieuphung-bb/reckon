@@ -207,3 +207,48 @@ class TestReferenceSeam(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAuthorship(Base):
+    """$RECKON_AGENT must stamp every event, not only the plan and change verbs.
+
+    It did not, and the gap was invisible: a harness exported the variable, the
+    graph writes landed unattributed, and a Smi recording its own success was
+    indistinguishable from a Com adjudicating it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._agent = os.environ.pop("RECKON_AGENT", None)
+
+    def tearDown(self):
+        os.environ.pop("RECKON_AGENT", None)
+        if self._agent is not None:
+            os.environ["RECKON_AGENT"] = self._agent
+        super().tearDown()
+
+    def _events(self):
+        with open(store.path_for("t"), encoding="utf-8") as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+
+    def test_graph_writes_carry_the_env_agent(self):
+        os.environ["RECKON_AGENT"] = "Smi-s9"
+        api.add_node("t", "finding", "read back uid=998", confidence="A")
+        api.add_node("t", "host", "10.0.0.1")
+        api.add_edge("t", "operator:me", "grants-access-to", "host:10.0.0.1")
+        api.decide("t", "dispatch s9", reason="channel unproven")
+        for ev in self._events():
+            if ev["op"] in ("add_node", "add_edge", "decide"):
+                self.assertEqual(ev.get("by"), "Smi-s9", ev["op"])
+
+    def test_explicit_argument_still_wins(self):
+        os.environ["RECKON_AGENT"] = "Smi-s9"
+        api.add_node("t", "host", "10.0.0.1")
+        api.change("t", "host:10.0.0.1", "started a relay", agent="Com")
+        c = [e for e in self._events() if e["op"] == "change"][-1]
+        self.assertEqual(c["by"], "Com")
+
+    def test_absent_agent_keeps_the_v1_shape(self):
+        api.add_node("t", "host", "10.0.0.2")
+        n = [e for e in self._events() if e["op"] == "add_node"][-1]
+        self.assertNotIn("by", n)
