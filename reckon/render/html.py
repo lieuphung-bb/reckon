@@ -14,7 +14,7 @@ import json
 import re
 
 from ..queries import (frontier, unrealized, unmined, stale, coverage, reach,
-                       verification_queue, why, budget)
+                       verification_queue, why, budget, unswept, untried)
 from ..recall import suggestions as _suggestions
 from ..reference import get_resolver
 from ..render.views import RENDERERS
@@ -373,6 +373,8 @@ def console(g, name: str) -> str:
     resolver = get_resolver()
     r = reach(g)
     f, ur, um, st = frontier(g), unrealized(g), unmined(g), stale(g)
+    usw = unswept(g)
+    unt = untried(g)
     cov, vq = coverage(g), verification_queue(g)
 
     bl = budget(g)
@@ -468,6 +470,8 @@ def console(g, name: str) -> str:
              f"now {len(f['reachable_now'])} · if {len(f['reachable_if'])} · "
              f"unreachable {len(f['unreachable'])} · "
              f"⚠ {len(ur)} unrealized · {len(um)} unmined · {len(st)} unverified"
+             + (f" · {len(usw)} unswept" if usw else "")
+             + (f" · {len(unt)} untried" if unt else "")
              + (f" · {len(bl)} budget-blown" if bl else ""))
 
     chips = "".join(

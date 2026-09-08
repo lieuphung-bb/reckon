@@ -10,7 +10,8 @@ import unittest
 
 from reckon.model import fold, OPERATOR_ID
 from reckon.queries import (frontier, unrealized, unmined, stale, coverage, why,
-                         verification_queue, reach, reach_pareto)
+                         verification_queue, reach, reach_pareto, unswept,
+                         blocked_but_unswept, untried, blocked_but_untried)
 
 
 def ev(seq, op, **args):
@@ -260,6 +261,326 @@ class TestTraversal(unittest.TestCase):
                rel="contains", epistemic="verified"),
         ])
         self.assertEqual(reach(g2)["artifact:key"]["rank"], 1)
+
+
+class TestUnsweptSurface(unittest.TestCase):
+    """fries 2026-09-07: a web surface closed on twelve hand-typed vhost guesses;
+    the real vhost (the intended entry) was never in the list, and no alarm saw
+    the absence because `unmined` needs a node to exist. The floor: an
+    established surface must carry evidence of its standard recon before it
+    counts as covered — the ATTEMPT, not an outcome."""
+
+    def _web(self, extra=()):
+        return fold([
+            ev(1, "add_node", id="host:box", kind="host", label="box",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:box-80-http", kind="service",
+               label="http nginx :80", epistemic="verified",
+               props={"port": "80", "proto": "tcp", "product": "nginx",
+                      "host": "box",
+                      "requires": [{"min_rank": 0, "target": "host:box"}]}),
+            *extra,
+        ])
+
+    def test_fires_on_established_web_with_no_sweep(self):
+        methods = {u["method"] for u in unswept(self._web())
+                   if u["surface"] == "web"}
+        self.assertEqual(methods,
+                         {"vhost-enum", "content-discovery", "tech-fingerprint"})
+
+    def test_earned_negative_clears_it(self):
+        # a vhost sweep that found nothing, recorded honestly, still clears —
+        # the floor demands the attempt, never a positive result. Web coverage is
+        # per-listener, so the evidence must NAME the port it swept.
+        g = self._web([
+            ev(3, "add_node", id="finding:v", kind="finding",
+               label="vhost brute: none found", epistemic="verified",
+               props={"method": "gobuster-vhost", "host": "box", "port": "80",
+                      "count": "5000"}),
+        ])
+        methods = {u["method"] for u in unswept(g) if u["surface"] == "web"}
+        self.assertNotIn("vhost-enum", methods)
+
+    def test_thin_sweep_stays_unswept(self):
+        # fries 2026-09-07: twelve hand-typed names recorded as "namespace closed".
+        # A count below the breadth floor is a spot-check, not a sweep — it stays.
+        g = self._web([
+            ev(3, "add_node", id="finding:thin", kind="finding",
+               label="12 guessed names, none hit", epistemic="verified",
+               props={"method": "vhost-enum", "host": "box", "port": "80",
+                      "count": "12"}),
+        ])
+        rows = [u for u in unswept(g)
+                if u["surface"] == "web" and u["method"] == "vhost-enum"]
+        self.assertEqual(len(rows), 1)          # still firing
+        self.assertTrue(rows[0]["thin"])        # flagged as a spot-check
+        # and a real sweep of the same surface clears it
+        g2 = self._web([
+            ev(3, "add_node", id="finding:real", kind="finding",
+               label="5000-name sweep", epistemic="verified",
+               props={"method": "vhost-enum", "host": "box", "port": "80",
+                      "count": "5000"}),
+        ])
+        self.assertNotIn("vhost-enum",
+                         {u["method"] for u in unswept(g2) if u["surface"] == "web"})
+
+    def test_web_coverage_is_per_listener_not_per_host(self):
+        # fries 2026-09-07 (the bug Com caught): a content-discovery sweep of :80
+        # must NOT clear :443's alarm — one listener's coverage is not another's.
+        g = fold([
+            ev(1, "add_node", id="host:box", kind="host", label="box",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:box-80-http", kind="service",
+               label="http :80", epistemic="verified",
+               props={"port": "80", "host": "box"}),
+            ev(3, "add_node", id="service:box-443-https", kind="service",
+               label="https :443", epistemic="verified",
+               props={"port": "443", "host": "box"}),
+            ev(4, "add_node", id="finding:cd80", kind="finding",
+               label="dirbrute :80 done", epistemic="verified",
+               props={"method": "content-discovery", "host": "box",
+                      "port": "80", "count": "4700"}),
+        ])
+        got = {(u["port"], u["method"]) for u in unswept(g)
+               if u["surface"] == "web" and u["method"] == "content-discovery"}
+        self.assertNotIn(("80", "content-discovery"), got)   # :80 cleared
+        self.assertIn(("443", "content-discovery"), got)     # :443 still fires
+
+    def test_host_level_surface_clears_without_a_port(self):
+        # SMB/LDAP/DNS are one logical service across ports, so a host-linked
+        # enum (no port) clears them — per-port there would only cry wolf.
+        g = fold([
+            ev(1, "add_node", id="host:box", kind="host", label="box",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:box-445-smb", kind="service",
+               label="microsoft-ds :445", epistemic="verified",
+               props={"port": "445", "host": "box"}),
+            ev(3, "add_node", id="finding:se", kind="finding",
+               label="enum4linux shares", epistemic="verified",
+               props={"method": "share-enum", "host": "box"}),
+        ])
+        methods = {u["method"] for u in unswept(g) if u["surface"] == "smb"}
+        self.assertNotIn("share-enum", methods)
+
+    def test_only_after_the_surface_is_established(self):
+        # a merely-hypothesized service must not cry wolf during first contact.
+        g = fold([
+            ev(1, "add_node", id="host:box", kind="host", label="box",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:box-80-http", kind="service",
+               label="http :80", epistemic="hypothesized",
+               props={"port": "80", "host": "box"}),
+        ])
+        self.assertEqual(unswept(g), [])
+
+    def test_http_framed_non_web_is_not_a_web_surface(self):
+        # WinRM (:5985) and RPC-over-HTTP (:593) carry "http" but a vhost/content
+        # sweep against them is nonsense — the exact cry-wolf the floor avoids.
+        g = fold([
+            ev(1, "add_node", id="host:box", kind="host", label="box",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:box-5985-http", kind="service",
+               label="http Microsoft HTTPAPI httpd :5985", epistemic="verified",
+               props={"port": "5985", "host": "box"}),
+            ev(3, "add_node", id="service:box-593-rpc", kind="service",
+               label="ncacn_http Microsoft Windows RPC :593", epistemic="verified",
+               props={"port": "593", "host": "box"}),
+        ])
+        self.assertEqual([u for u in unswept(g) if u["surface"] == "web"], [])
+
+
+class TestBlockedButUnswept(unittest.TestCase):
+    """fries 2026-09-07: 'every remaining path is credential-gated' — drawn while
+    a web surface was never adequately swept. The block was a coverage gap. This
+    challenges the terminal negative while any standard recon remains."""
+
+    def _gated(self, extra=()):
+        # a verified web service (so unswept fires) + an objective that needs a
+        # privilege nothing grants (so nothing is winnable right now).
+        return fold([
+            ev(1, "add_node", id="host:box", kind="host", label="box",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:box-80-http", kind="service",
+               label="http :80", epistemic="verified",
+               props={"port": "80", "host": "box"}),
+            ev(3, "add_node", id="obj:root", kind="objective", label="root the box",
+               props={"requires": [{"target": "host:box", "min_rank": 3}]}),
+            *extra,
+        ])
+
+    def test_fires_when_no_win_and_recon_incomplete(self):
+        b = blocked_but_unswept(self._gated())
+        self.assertEqual(len(b), 1)
+        self.assertGreaterEqual(b[0]["unswept"], 1)
+
+    def test_clears_once_recon_is_complete(self):
+        # satisfy every web method at adequate breadth; the block is now earned.
+        g = self._gated([
+            ev(4, "add_node", id="f:vh", kind="finding", label="vhost sweep",
+               epistemic="verified", props={"method": "vhost-enum",
+               "host": "box", "port": "80", "count": "5000"}),
+            ev(5, "add_node", id="f:cd", kind="finding", label="content sweep",
+               epistemic="verified", props={"method": "content-discovery",
+               "host": "box", "port": "80", "count": "5000"}),
+            ev(6, "add_node", id="f:tf", kind="finding", label="tech fp",
+               epistemic="verified", props={"method": "tech-fingerprint",
+               "host": "box", "port": "80"}),
+        ])
+        self.assertEqual(unswept(g), [])            # recon done
+        self.assertEqual(blocked_but_unswept(g), [])  # so the block is legitimate
+
+    def test_silent_when_a_win_is_available(self):
+        # if an objective is winnable now, we are not blocked — no matter the floor.
+        g = fold([
+            ev(1, "add_node", id="host:box", kind="host", label="box",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:box-80-http", kind="service",
+               label="http :80", epistemic="verified",
+               props={"port": "80", "host": "box"}),
+            ev(3, "add_node", id="obj:easy", kind="objective", label="reach the box",
+               props={"requires": [{"target": "host:box", "min_rank": 0}]}),
+            ev(4, "add_edge", id="e1", src=OPERATOR_ID, rel="grants-access-to",
+               dst="host:box", epistemic="verified"),
+        ])
+        self.assertEqual(blocked_but_unswept(g), [])
+
+
+class TestUntriedSurface(unittest.TestCase):
+    """fries 2026-09-08: a documented credential was tested only via Kerberos/AD,
+    refused on six AD surfaces, and written off as dead — while the web-app login it
+    was actually for was never tried. Both executor and verifier varied the
+    INSTRUMENT (impacket AES -> RC4) but not the SURFACE, and counted six refusals on
+    one credential store as thoroughness. The exploitation-axis mirror of `unswept`:
+    a held primitive must be tried against every present surface KIND, and refusals
+    within one store are ONE negative, not N."""
+
+    def _box(self, extra=(), web_epistemic="verified"):
+        # a held credential, an AD surface, and a web surface it may actually be for.
+        return fold([
+            ev(1, "add_node", id="host:dc", kind="host", label="dc",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:dc-445-smb", kind="service",
+               label="microsoft-ds :445", epistemic="verified",
+               props={"port": "445", "host": "dc"}),
+            ev(3, "add_node", id="service:dc-389-ldap", kind="service",
+               label="ldap :389", epistemic="verified",
+               props={"port": "389", "host": "dc"}),
+            ev(4, "add_node", id="service:dc-88-krb", kind="service",
+               label="kerberos-sec :88", epistemic="verified",
+               props={"port": "88", "host": "dc"}),
+            ev(5, "add_node", id="service:dc-80-gitea", kind="service",
+               label="http gitea :80", epistemic=web_epistemic,
+               props={"port": "80", "host": "dc", "product": "gitea"}),
+            ev(6, "add_node", id="cred:cooper", kind="cred", label="d.cooper",
+               exploitation="acquired"),
+            *extra,
+        ])
+
+    def _refused_on_ad(self, *services):
+        # a tested-against edge that FAILED for each named AD service.
+        out = []
+        for i, sid in enumerate(services):
+            out.append(ev(10 + i, "add_edge", id=f"ta:{sid}", src="cred:cooper",
+                          rel="tested-against", dst=sid, epistemic="refuted"))
+        return out
+
+    def test_fires_when_failed_on_ad_and_web_untried(self):
+        g = self._box(self._refused_on_ad("service:dc-445-smb"))
+        rows = untried(g)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["cred"], "cred:cooper")
+        self.assertIn("ad-auth", rows[0]["tried_kinds"])
+        self.assertIn("webapp:host:dc:80", rows[0]["untried_kinds"])
+
+    def test_six_ad_refusals_collapse_to_one_tried_kind(self):
+        # the whole point: SMB + LDAP + Kerberos are one credential store. Three
+        # refusals are ONE tried-cell, and the web door is still untried.
+        g = self._box(self._refused_on_ad(
+            "service:dc-445-smb", "service:dc-389-ldap", "service:dc-88-krb"))
+        rows = untried(g)
+        self.assertEqual(rows[0]["tried_kinds"], ["ad-auth"])      # not three
+        self.assertEqual(rows[0]["untried_kinds"], ["webapp:host:dc:80"])
+
+    def test_success_anywhere_silences_it(self):
+        # the credential worked on the web app -> it is live, not a false wall.
+        g = self._box(self._refused_on_ad("service:dc-445-smb") + [
+            ev(20, "add_edge", id="ta:web", src="cred:cooper", rel="tested-against",
+               dst="service:dc-80-gitea", epistemic="verified"),
+        ])
+        self.assertEqual(untried(g), [])
+
+    def test_never_tried_anywhere_is_unmined_not_untried(self):
+        # a held cred nobody has tried yet is `unmined`'s job; `untried` fires only
+        # on the dangerous tried-and-failed-here-but-not-there state.
+        g = self._box()
+        self.assertEqual(untried(g), [])
+
+    def test_trying_the_web_clears_it(self):
+        g = self._box(self._refused_on_ad("service:dc-445-smb") + [
+            ev(20, "add_edge", id="ta:web", src="cred:cooper", rel="tested-against",
+               dst="service:dc-80-gitea", epistemic="refuted"),   # tried, even if fail
+        ])
+        self.assertEqual(untried(g), [])
+
+    def test_only_verified_surfaces_count(self):
+        # a merely-hypothesized web service must not manufacture an untried cell.
+        g = self._box(self._refused_on_ad("service:dc-445-smb"),
+                      web_epistemic="hypothesized")
+        self.assertEqual(untried(g), [])
+
+    def test_objective_adjacent_web_is_flagged(self):
+        g = self._box(self._refused_on_ad("service:dc-445-smb") + [
+            ev(20, "add_node", id="obj:root", kind="objective", label="root dc",
+               props={"requires": [{"target": "host:dc", "min_rank": 3}]}),
+        ])
+        cell = untried(g)[0]["cells"][0]
+        self.assertEqual(cell["kind"], "webapp:host:dc:80")
+        self.assertTrue(cell["objective_adjacent"])
+
+
+class TestBlockedButUntried(unittest.TestCase):
+    """The engagement-scope twin of `blocked_but_unswept`: a 'blocked / every path is
+    credential-gated' conclusion drawn while a credential we already HOLD has a
+    present surface kind it was never tried against. The door we hold the key to but
+    never opened is not a wall."""
+
+    def _stuck(self, extra=()):
+        # held cred, a verified web surface, and an objective needing a privilege
+        # nothing grants (so nothing is winnable now).
+        return fold([
+            ev(1, "add_node", id="host:dc", kind="host", label="dc",
+               epistemic="verified"),
+            ev(2, "add_node", id="service:dc-80-gitea", kind="service",
+               label="http gitea :80", epistemic="verified",
+               props={"port": "80", "host": "dc", "product": "gitea"}),
+            ev(3, "add_node", id="cred:cooper", kind="cred", label="d.cooper",
+               exploitation="acquired"),
+            ev(4, "add_node", id="obj:root", kind="objective", label="root dc",
+               props={"requires": [{"target": "host:dc", "min_rank": 3}]}),
+            *extra,
+        ])
+
+    def test_fires_when_stuck_and_held_cred_has_untried_surface(self):
+        b = blocked_but_untried(self._stuck())
+        self.assertEqual(len(b), 1)
+        self.assertEqual(b[0]["creds"], 1)
+        self.assertIn("webapp:host:dc:80", b[0]["detail"][0]["untried_kinds"])
+
+    def test_clears_once_the_cred_is_tried_there(self):
+        g = self._stuck([
+            ev(5, "add_edge", id="ta:web", src="cred:cooper", rel="tested-against",
+               dst="service:dc-80-gitea", epistemic="refuted"),
+        ])
+        self.assertEqual(blocked_but_untried(g), [])
+
+    def test_silent_when_a_win_is_available(self):
+        g = self._stuck([
+            ev(5, "add_node", id="obj:easy", kind="objective", label="reach dc",
+               props={"requires": [{"target": "host:dc", "min_rank": 0}]}),
+            ev(6, "add_edge", id="e1", src=OPERATOR_ID, rel="grants-access-to",
+               dst="host:dc", epistemic="verified"),
+        ])
+        self.assertEqual(blocked_but_untried(g), [])
 
 
 if __name__ == "__main__":

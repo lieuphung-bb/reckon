@@ -19,8 +19,9 @@ from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, OPERATOR_ID,
                     STEP_STATUS, BLOCKED_REASONS, BLOCKED_IMPLICATION, fold)
 from .reference import make_reference
 from .queries import (frontier, unrealized, unmined, stale, coverage, why,
-                      verification_queue, reach, budget, delta as _delta,
-                      DEFAULT_BUDGET)
+                      verification_queue, reach, budget, unswept,
+                      blocked_but_unswept, untried, blocked_but_untried,
+                      delta as _delta, DEFAULT_BUDGET)
 from . import recall as _recall
 
 OBJECTIVE_STATUS = ("open", "achieved", "blocked")
@@ -831,6 +832,18 @@ ALARM_REGISTRY = (
      "needs claim expiry from SPEC-002, which is not built"),
     ("A7", "uncleaned-changes", ENGAGEMENT, True,
      "RoE debt — informational, never blocking"),
+    # Coverage floors. A8/A10 fire per surface/cred (id carries the specifics);
+    # A9/A11 are the terminal-negative challenges, one each. Epistemic axis (recon
+    # never run) is A8/A9; exploitation axis (a held primitive never applied) is
+    # A10/A11.
+    ("A8", "unswept-surface", ENGAGEMENT, True,
+     "a standard recon step never evidenced on an established surface"),
+    ("A9", "blocked-but-unswept", ENGAGEMENT, True,
+     "'blocked/credential-gated' drawn while standard recon is incomplete"),
+    ("A10", "untried-surface", ENGAGEMENT, True,
+     "a held credential refused on one surface KIND, another kind never tried"),
+    ("A11", "blocked-but-untried", ENGAGEMENT, True,
+     "'blocked/credential-gated' drawn while a held cred has an untried surface"),
 )
 
 DARK_ALARMS = tuple(a for a in ALARM_REGISTRY if not a[3])
@@ -968,6 +981,52 @@ def alarms(name, since: int | None = None) -> list:
             "why": f"{len(outstanding)} outstanding change(s) on the target — "
                    "RoE debt, owed at close",
             "detail": {"changes": outstanding}})
+
+    # A8: a standard recon step never evidenced on an established surface. Like
+    # the rest here, it is computed from the log, not from anyone noticing -- and
+    # it is the one that catches a NEGATIVE the agent drew too cleanly (a surface
+    # declared covered without the sweep that would earn that negative).
+    for u in unswept(g):
+        out.append({
+            "id": f"A8/{u['surface']}:{u['method']}", "name": "unswept-surface",
+            "group": ENGAGEMENT, "severity": "warn",
+            "why": u["why"],
+            "detail": {"service": u["service"], "surface": u["surface"],
+                       "method": u["method"], "host": u["host"],
+                       "port": u.get("port"), "thin": u.get("thin"),
+                       "count": u.get("count"), "min_breadth": u.get("min_breadth")}})
+
+    # A9: a "blocked / credential-gated" conclusion drawn while standard recon is
+    # still incomplete. The one alarm that challenges the terminal negative
+    # itself, not just a single missing finding.
+    for b in blocked_but_unswept(g):
+        out.append({
+            "id": "A9", "name": "blocked-but-unswept",
+            "group": ENGAGEMENT, "severity": "warn",
+            "why": b["why"],
+            "detail": {"open_objectives": b["open_objectives"],
+                       "unswept": b["unswept"]}})
+
+    # A10: a held credential refused on one surface KIND while a present surface kind
+    # was never tried — the exploitation-axis mirror of A8. Catches the negative drawn
+    # by varying the instrument, not the surface (six AD refusals != a dead cred).
+    for u in untried(g):
+        out.append({
+            "id": f"A10/{u['cred']}", "name": "untried-surface",
+            "group": ENGAGEMENT, "severity": "warn",
+            "why": u["why"],
+            "detail": {"cred": u["cred"], "tried_kinds": u["tried_kinds"],
+                       "untried_kinds": u["untried_kinds"], "cells": u["cells"]}})
+
+    # A11: a "blocked / credential-gated" conclusion drawn while a credential we HOLD
+    # has a present surface kind it was never tried against. The A9 twin on the
+    # exploitation axis — the terminal negative challenged for held primitives.
+    for b in blocked_but_untried(g):
+        out.append({
+            "id": "A11", "name": "blocked-but-untried",
+            "group": ENGAGEMENT, "severity": "warn",
+            "why": b["why"],
+            "detail": {"creds": b["creds"], "untried": b["detail"]}})
 
     return out
 
@@ -1119,6 +1178,10 @@ def status(name) -> dict:
         "frontier": frontier(g),
         "unrealized": unrealized(g),
         "unmined": unmined(g),
+        "unswept": unswept(g),
+        "blocked_but_unswept": blocked_but_unswept(g),
+        "untried": untried(g),
+        "blocked_but_untried": blocked_but_untried(g),
         "stale": stale(g),
         "verification_queue": verification_queue(g),
         "budget_blown": budget(g),
