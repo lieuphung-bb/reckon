@@ -38,6 +38,9 @@ TOOLS = [
     _tool("status", "Full engagement status: coverage, frontier, unrealized, "
                     "unmined, unswept (surfaces missing their standard recon "
                     "floor), untried (held creds never tried on a present surface "
+                    "KIND), unentered (a host on a segment you already hold "
+                    "access on that was never entered — the door on the floor "
+                    "you are standing on), "
                     "KIND — the door you hold a key to but never opened), stale, "
                     "verification queue, blown failure budgets, recent decisions. "
                     "Call this first.", {}, []),

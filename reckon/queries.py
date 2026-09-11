@@ -14,6 +14,7 @@ and ordering them by how many objectives they gate ranks the cheapest next test.
 """
 
 import heapq
+import re
 
 from .model import ACCESS_RELS, OPERATOR_ID
 
@@ -755,6 +756,98 @@ def _cred_tried_kinds(g, cred):
     return tried, won
 
 
+# --- segment occupancy: a door on a floor we are already standing on ---------------
+#
+# The failure this closes (fries 2026-09-11). Com held command execution in two
+# containers on a docker bridge, observed two more on the same bridge, entered neither,
+# and then computed "containers are sealed / the filesystem is unreachable" over the two
+# it had entered. `untried` could not see it: that alarm is about a CREDENTIAL with an
+# untried surface kind, and this was a HOST nobody had tried at all. `unmined` could not
+# see it either, because for ~500 graph events one of those containers had no node.
+#
+# The alarm is deliberately gated on occupancy. A host somewhere on the internet is not
+# interesting; a host on a segment where we already hold access is a door on a floor we
+# are standing on, and "exhausted" stated over a subset of that floor is an unearned
+# negative every time.
+
+_ADDR_RE = re.compile(r"(?<![0-9.])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?![0-9.])")
+
+_ENTERED = ("acquired", "examined", "exhausted")
+
+
+def _host_addr(n) -> str | None:
+    """The IPv4 a host node stands for, from its id or label, or None.
+
+    Read from both because ids carry suffixes for re-spawned targets
+    (`host:10.129.244.72-i4`) while labels carry prose.
+    """
+    for text in (n.id, n.label or ""):
+        m = _ADDR_RE.search(text)
+        if m and all(int(o) <= 255 for o in m.group(1).split(".")):
+            return m.group(1)
+    return None
+
+
+def _segment(addr: str) -> str:
+    """The /24. Coarse on purpose: a bridge, a lab subnet and a VLAN are all /24-ish in
+    practice, and a wrong-but-coarse grouping still puts the untried door on the board.
+    """
+    return addr.rsplit(".", 1)[0]
+
+
+def _entry_attempted(g, host) -> bool:
+    """Whether entry into this host was ever attempted, so a failure clears the alarm.
+
+    Same earned-negative rule as `untried`: a recorded `tested-against` edge counts
+    whatever its outcome. Trying and failing is knowledge; never trying is the hole.
+    """
+    return any(e.rel == "tested-against" for e in g.in_edges(host.id))
+
+
+def unentered(g) -> list:
+    """Hosts on a segment we already occupy that nobody has ever tried to enter.
+
+    Fires per host, only while we hold access SOMEWHERE on its /24, and only for hosts
+    still at `discovered` with no `tested-against` edge. Clears on entry or on a
+    recorded attempt. A refuted host does not exist, so it never fires.
+
+    Retired hosts are a real source of noise here and the cure is in the recorder, not
+    in this query: supersede a host node when its instance is replaced, and it drops out
+    like any other superseded node.
+    """
+    by_seg: dict = {}
+    for h in g.by_kind("host"):
+        if h.superseded_by or h.epistemic == "refuted":
+            continue
+        if h.id == OPERATOR_ID:
+            continue
+        addr = _host_addr(h)
+        if not addr:
+            continue
+        by_seg.setdefault(_segment(addr), []).append((h, addr))
+
+    out = []
+    for seg, members in sorted(by_seg.items()):
+        held = [h for h, _ in members if h.exploitation in _ENTERED]
+        if not held:
+            continue                      # not inside this segment: not our business
+        for h, addr in members:
+            if h.exploitation in _ENTERED or _entry_attempted(g, h):
+                continue
+            out.append({
+                "id": f"{h.id}#unentered", "host": h.id, "label": h.label,
+                "addr": addr, "segment": f"{seg}.0/24",
+                "held_on_segment": [x.id for x in held],
+                "why": (f"host '{h.label}' sits on {seg}.0/24, where access is already "
+                        f"held on {len(held)} host(s), and it has never been entered or "
+                        f"even attempted. Any claim that this segment is exhausted, "
+                        f"sealed or unreachable is computed over the hosts you DID "
+                        f"enter — enter it, or record an attempt and earn the negative."),
+            })
+    out.sort(key=lambda x: x["host"])
+    return out
+
+
 def _objective_targets(g) -> set:
     """Node ids open objectives route through: their `requires` targets, plus the
     services sitting on a required host (a foothold service is 'adjacent' to the host
@@ -871,7 +964,8 @@ def _alarm_ids(g):
             {s["id"] for s in stale(g)},
             {o["id"] for o in frontier(g)["reachable_now"]},
             {u["id"] for u in unswept(g)},
-            {u["id"] for u in untried(g)})
+            {u["id"] for u in untried(g)},
+            {u["id"] for u in unentered(g)})
 
 
 def delta(before, after) -> dict:
@@ -881,8 +975,8 @@ def delta(before, after) -> dict:
     want the CHANGE in state. A 60-node board becomes three lines, and stays
     three lines however large the engagement grows.
     """
-    b_unreal, b_unmined, b_stale, b_now, b_unswept, b_untried = _alarm_ids(before)
-    a_unreal, a_unmined, a_stale, a_now, a_unswept, a_untried = _alarm_ids(after)
+    b_unreal, b_unmined, b_stale, b_now, b_unswept, b_untried, b_unent = _alarm_ids(before)
+    a_unreal, a_unmined, a_stale, a_now, a_unswept, a_untried, a_unent = _alarm_ids(after)
 
     def label(nid):
         n = after.nodes.get(nid)
@@ -900,6 +994,12 @@ def delta(before, after) -> dict:
 
     def untlabel(nid):
         return untried_after.get(nid, nid)
+
+    unentered_after = {u["id"]: f"{u['label']} — on {u['segment']}, never entered"
+                       for u in unentered(after)}
+
+    def unentlabel(nid):
+        return unentered_after.get(nid, nid)
 
     newly_winnable = [{"id": i, "label": label(i)} for i in a_now - b_now]
     resolved = []
@@ -930,6 +1030,8 @@ def delta(before, after) -> dict:
         "cleared_unswept": [{"id": i, "label": uswlabel(i)} for i in b_unswept - a_unswept],
         "new_untried": [{"id": i, "label": untlabel(i)} for i in a_untried - b_untried],
         "cleared_untried": [{"id": i, "label": untlabel(i)} for i in b_untried - a_untried],
+        "new_unentered": [{"id": i, "label": unentlabel(i)} for i in a_unent - b_unent],
+        "cleared_unentered": [{"id": i, "label": unentlabel(i)} for i in b_unent - a_unent],
         "resolved": resolved,
         "decisions": [d for d in after.decisions if d["seq"] > before.seq],
         "budget_blown": budget(after),
