@@ -36,8 +36,11 @@ def _tool(name, description, props, required):
 TOOLS = [
     # --- reads: what an agent should call before advising anything
     _tool("status", "Full engagement status: coverage, frontier, unrealized, "
-                    "unmined, stale, verification queue, blown failure budgets, "
-                    "recent decisions. Call this first.", {}, []),
+                    "unmined, unswept (surfaces missing their standard recon "
+                    "floor), untried (held creds never tried on a present surface "
+                    "KIND — the door you hold a key to but never opened), stale, "
+                    "verification queue, blown failure budgets, recent decisions. "
+                    "Call this first.", {}, []),
     _tool("delta", "What changed since the last look. Prefer this over status "
                    "when resuming: it is fixed-size however large the engagement.",
           {"since": {"type": "integer", "description": "seq; omit for since-last-look"}},
@@ -56,12 +59,26 @@ TOOLS = [
            "epistemic": {**_S, "description": "unexplored|hypothesized|verified|refuted"},
            "exploitation": {**_S, "description": "discovered|acquired|examined|exhausted"},
            "confidence": {**_S, "description": "A-F, SOURCE RELIABILITY not probability"},
+           "method": {**_S, "description": "the recon step this evidences, e.g. "
+                      "vhost-enum, content-discovery, share-enum — clears the "
+                      "matching unswept alarm; an earned negative ('ran it, found "
+                      "nothing') counts"},
+           "port": {**_S, "description": "for WEB sweeps (vhost/content/tech), the "
+                    "listener port you swept, e.g. 443 — web coverage is "
+                    "per-listener, so a sweep of :80 does not clear :443"},
+           "count": {**_S, "description": "for wordlist sweeps (vhost/content/"
+                     "subdomain), how many candidates you tried — a sweep below "
+                     "the breadth floor stays unswept (a hand-list is not a sweep)"},
            "requires": {"type": "array", "items": _S,
                         "description": "objectives only, e.g. ['host:dc01@3']"},
            "crown": {"type": "boolean"}},
           ["kind", "label"]),
     _tool("add_edge", "Record a relationship. Mark it hypothesized until tested — "
-                      "that is what builds the verification queue.",
+                      "that is what builds the verification queue. To record trying "
+                      "a credential on a surface, add a 'tested-against' edge from "
+                      "the cred to the SPECIFIC service node (not the host), "
+                      "verified=it worked, refuted=it failed — that is what clears "
+                      "the untried alarm for that surface KIND.",
           {"src": _S, "rel": _S, "dst": _S,
            "epistemic": _S, "confidence": _S,
            "rank": {"type": "integer", "description": "0 reach 1 app 2 shell 3 admin"},
@@ -185,11 +202,20 @@ def _dispatch(tool: str, args: dict):
     if tool == "recall":
         return api.recall(name, args["node"])
     if tool == "add_node":
+        props = {}
+        if args.get("method"):
+            props["method"] = args["method"]
+        if args.get("port"):
+            props["port"] = args["port"]
+        if args.get("count"):
+            props["count"] = args["count"]
+        props = props or None
         return api.add_node(name, args["kind"], args["label"],
                             node_id=args.get("id"),
                             epistemic=args.get("epistemic", "unexplored"),
                             exploitation=args.get("exploitation", "discovered"),
                             confidence=args.get("confidence"),
+                            props=props,
                             requires=args.get("requires"),
                             crown=bool(args.get("crown")))
     if tool == "add_edge":

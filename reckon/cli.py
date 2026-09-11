@@ -18,7 +18,7 @@ from . import __version__, api, hooks, retro, ingest, reference, store
 from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, STEP_STATUS,
                     BLOCKED_REASONS, BLOCKED_IMPLICATION)
 from .queries import (frontier, unrealized, unmined, stale, why,
-                      verification_queue, budget)
+                      verification_queue, budget, unswept, untried)
 from .redact import redact_graph, redact_obj, redact_text
 from .render.board import board
 from .render.handoff import handoff as render_handoff, fleet as render_fleet
@@ -160,6 +160,19 @@ def cmd_unmined(args):
 def cmd_stale(args):
     s = stale(_graph(args))
     _emit(args, s, "\n".join(f"⚠ {o['label']} — {o['reason']}" for o in s) or "none")
+
+
+def cmd_unswept(args):
+    u = unswept(_graph(args))
+    _emit(args, u, "\n".join(f"⚠ {o['surface']} {o['label']} — no {o['method']} "
+                             "evidence (standard recon floor)" for o in u) or "none")
+
+
+def cmd_untried(args):
+    u = untried(_graph(args))
+    _emit(args, u, "\n".join(f"⚠ {o['label']} — tried {o['tried_kinds']}, never "
+                             f"tried: {', '.join(o['untried_kinds'])}" for o in u)
+          or "none")
 
 
 def cmd_queue(args):
@@ -494,6 +507,10 @@ def cmd_delta(args):
     show("⚠ new unmined", d["new_unmined"], lambda i: f"{i['label']}")
     show("✓ cleared unmined", d["cleared_unmined"], lambda i: f"{i['label']}")
     show("⚠ new unverified", d["new_stale"], lambda i: f"{i['label']}")
+    show("⚠ new unswept", d["new_unswept"], lambda i: f"{i['label']}")
+    show("✓ cleared unswept", d["cleared_unswept"], lambda i: f"{i['label']}")
+    show("⚠ new untried", d["new_untried"], lambda i: f"{i['label']}")
+    show("✓ cleared untried", d["cleared_untried"], lambda i: f"{i['label']}")
     show("resolved", d["resolved"], lambda i: f"{i['id']}: {i['from']} → {i['to']}")
     show("new nodes", d["new_nodes"], lambda i: f"{i['kind']} {i['label']}")
     show("decisions", d["decisions"], lambda i: f"{i['chose']} — {i['reason']}")
@@ -597,8 +614,9 @@ def build_parser():
         s.set_defaults(func=fn)
 
     for nm, fn in (("frontier", cmd_frontier), ("unrealized", cmd_unrealized),
-                   ("unmined", cmd_unmined), ("stale", cmd_stale),
-                   ("queue", cmd_queue)):
+                   ("unmined", cmd_unmined), ("unswept", cmd_unswept),
+                   ("untried", cmd_untried),
+                   ("stale", cmd_stale), ("queue", cmd_queue)):
         s = sub.add_parser(nm); s.add_argument("--json", action="store_true")
         s.add_argument("--redact", action="store_true"); s.set_defaults(func=fn)
 
