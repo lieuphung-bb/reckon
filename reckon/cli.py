@@ -18,7 +18,8 @@ from . import __version__, api, hooks, retro, ingest, reference, store
 from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, STEP_STATUS,
                     BLOCKED_REASONS, BLOCKED_IMPLICATION)
 from .queries import (frontier, unrealized, unmined, stale, why,
-                      verification_queue, budget, unswept, untried)
+                      verification_queue, budget, unswept, untried,
+                      unentered)
 from .redact import redact_graph, redact_obj, redact_text
 from .render.board import board
 from .render.handoff import handoff as render_handoff, fleet as render_fleet
@@ -166,6 +167,13 @@ def cmd_unswept(args):
     u = unswept(_graph(args))
     _emit(args, u, "\n".join(f"⚠ {o['surface']} {o['label']} — no {o['method']} "
                              "evidence (standard recon floor)" for o in u) or "none")
+
+
+def cmd_unentered(args):
+    u = unentered(_graph(args))
+    _emit(args, u, "\n".join(f"⚠ {o['label']} on {o['segment']} — never entered, "
+                             f"access held on {len(o['held_on_segment'])} host(s) there"
+                             for o in u) or "none")
 
 
 def cmd_untried(args):
@@ -511,6 +519,8 @@ def cmd_delta(args):
     show("✓ cleared unswept", d["cleared_unswept"], lambda i: f"{i['label']}")
     show("⚠ new untried", d["new_untried"], lambda i: f"{i['label']}")
     show("✓ cleared untried", d["cleared_untried"], lambda i: f"{i['label']}")
+    show("⚠ new unentered", d["new_unentered"], lambda i: f"{i['label']}")
+    show("✓ cleared unentered", d["cleared_unentered"], lambda i: f"{i['label']}")
     show("resolved", d["resolved"], lambda i: f"{i['id']}: {i['from']} → {i['to']}")
     show("new nodes", d["new_nodes"], lambda i: f"{i['kind']} {i['label']}")
     show("decisions", d["decisions"], lambda i: f"{i['chose']} — {i['reason']}")
@@ -616,6 +626,7 @@ def build_parser():
     for nm, fn in (("frontier", cmd_frontier), ("unrealized", cmd_unrealized),
                    ("unmined", cmd_unmined), ("unswept", cmd_unswept),
                    ("untried", cmd_untried),
+                   ("unentered", cmd_unentered),
                    ("stale", cmd_stale), ("queue", cmd_queue)):
         s = sub.add_parser(nm); s.add_argument("--json", action="store_true")
         s.add_argument("--redact", action="store_true"); s.set_defaults(func=fn)

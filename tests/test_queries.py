@@ -11,7 +11,8 @@ import unittest
 from reckon.model import fold, OPERATOR_ID
 from reckon.queries import (frontier, unrealized, unmined, stale, coverage, why,
                          verification_queue, reach, reach_pareto, unswept,
-                         blocked_but_unswept, untried, blocked_but_untried)
+                         blocked_but_unswept, untried, blocked_but_untried,
+                         unentered)
 
 
 def ev(seq, op, **args):
@@ -585,3 +586,79 @@ class TestBlockedButUntried(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnenteredHost(unittest.TestCase):
+    """fries 2026-09-11: two containers entered on a docker bridge, two observed on the
+    same bridge and never tried, and "the segment is sealed" concluded over the two that
+    were entered. The door on the floor you are already standing on."""
+
+    def _bridge(self, *extra):
+        return fold([
+            ev(1, "add_node", id=OPERATOR_ID, kind="operator", label="me"),
+            ev(2, "add_node", id="host:172.18.0.3", kind="host",
+               label="postgres container 172.18.0.3", epistemic="verified",
+               exploitation="acquired"),
+            ev(3, "add_node", id="host:172.18.0.4", kind="host",
+               label="pgadmin container 172.18.0.4", epistemic="verified",
+               exploitation="discovered"),
+            *extra,
+        ])
+
+    def test_fires_on_the_unentered_neighbour(self):
+        rows = unentered(self._bridge())
+        self.assertEqual([r["host"] for r in rows], ["host:172.18.0.4"])
+        self.assertEqual(rows[0]["segment"], "172.18.0.0/24")
+        self.assertEqual(rows[0]["held_on_segment"], ["host:172.18.0.3"])
+
+    def test_silent_when_we_hold_nothing_on_the_segment(self):
+        # a host we have merely seen, on a segment we are not inside, is not this alarm.
+        g = fold([
+            ev(1, "add_node", id=OPERATOR_ID, kind="operator", label="me"),
+            ev(2, "add_node", id="host:10.10.10.9", kind="host", label="far host",
+               epistemic="verified", exploitation="discovered"),
+        ])
+        self.assertEqual(unentered(g), [])
+
+    def test_entry_clears_it(self):
+        g = self._bridge(ev(4, "set_exploitation", id="host:172.18.0.4",
+                            state="acquired"))
+        self.assertEqual(unentered(g), [])
+
+    def test_a_recorded_attempt_earns_the_negative(self):
+        # tried and failed is knowledge; never tried is the hole.
+        g = self._bridge(
+            ev(4, "add_edge", id="ta:pgadmin", src="host:172.18.0.3",
+               rel="tested-against", dst="host:172.18.0.4", epistemic="refuted"))
+        self.assertEqual(unentered(g), [])
+
+    def test_refuted_host_never_fires(self):
+        g = self._bridge(ev(4, "set_epistemic", id="host:172.18.0.4",
+                            state="refuted"))
+        self.assertEqual(unentered(g), [])
+
+    def test_superseded_host_drops_out(self):
+        # the retired-instance noise case: supersede the old node and it stops firing.
+        g = self._bridge(
+            ev(4, "add_node", id="host:172.18.0.9", kind="host", label="old instance",
+               epistemic="verified", exploitation="discovered"),
+            ev(5, "supersede", old_id="host:172.18.0.9", new_id="host:172.18.0.4",
+               reason="respawn"))
+        self.assertNotIn("host:172.18.0.9", [r["host"] for r in unentered(g)])
+
+    def test_address_read_from_a_suffixed_id(self):
+        # ids carry suffixes for re-spawned targets; the address still has to parse.
+        g = fold([
+            ev(1, "add_node", id=OPERATOR_ID, kind="operator", label="me"),
+            ev(2, "add_node", id="host:10.129.244.72-i4", kind="host",
+               label="fourth instance", epistemic="verified",
+               exploitation="acquired"),
+            ev(3, "add_node", id="host:10.129.244.90-x", kind="host",
+               label="neighbour", epistemic="verified", exploitation="discovered"),
+        ])
+        rows = unentered(g)
+        self.assertEqual([r["addr"] for r in rows], ["10.129.244.90"])
+
+    def test_operator_node_is_not_a_host(self):
+        rows = unentered(self._bridge())
+        self.assertNotIn(OPERATOR_ID, [r["host"] for r in rows])

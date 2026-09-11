@@ -21,6 +21,7 @@ from .reference import make_reference
 from .queries import (frontier, unrealized, unmined, stale, coverage, why,
                       verification_queue, reach, budget, unswept,
                       blocked_but_unswept, untried, blocked_but_untried,
+                      unentered,
                       delta as _delta, DEFAULT_BUDGET)
 from . import recall as _recall
 
@@ -844,6 +845,10 @@ ALARM_REGISTRY = (
      "a held credential refused on one surface KIND, another kind never tried"),
     ("A11", "blocked-but-untried", ENGAGEMENT, True,
      "'blocked/credential-gated' drawn while a held cred has an untried surface"),
+    # A12 is the same unearned negative one level up from A10: not a credential with an
+    # untried surface, but a HOST on a segment we already occupy that nobody ever tried.
+    ("A12", "unentered-host", ENGAGEMENT, True,
+     "a host on a segment we already hold access on, never entered or attempted"),
 )
 
 DARK_ALARMS = tuple(a for a in ALARM_REGISTRY if not a[3])
@@ -1017,6 +1022,17 @@ def alarms(name, since: int | None = None) -> list:
             "why": u["why"],
             "detail": {"cred": u["cred"], "tried_kinds": u["tried_kinds"],
                        "untried_kinds": u["untried_kinds"], "cells": u["cells"]}})
+
+    # A12: a host on a segment we already occupy that was never entered or attempted.
+    # fries 2026-09-11: two containers entered on a bridge, two observed and never tried,
+    # and "the segment is sealed" concluded over the two that were entered.
+    for u in unentered(g):
+        out.append({
+            "id": f"A12/{u['host']}", "name": "unentered-host",
+            "group": ENGAGEMENT, "severity": "warn",
+            "why": u["why"],
+            "detail": {"host": u["host"], "addr": u["addr"], "segment": u["segment"],
+                       "held_on_segment": u["held_on_segment"]}})
 
     # A11: a "blocked / credential-gated" conclusion drawn while a credential we HOLD
     # has a present surface kind it was never tried against. The A9 twin on the
