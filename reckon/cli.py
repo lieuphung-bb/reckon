@@ -472,12 +472,21 @@ def cmd_budget(args):
                              for x in b) or "none")
 
 
+# A hit that matched no service hint is marked, because presenting it as a match
+# is what teaches a reader to skip the whole list. "generic" means: recorded
+# against a node that carried no surface hint at all, so it is offered for the
+# KIND, not because anything about this surface resembled it.
+def _recall_line(h):
+    mark = "✓" if h["confirmed"] else "?"
+    tail = " [generic — no surface match]" if h.get("generic") else ""
+    return (f"{mark} {h['technique']} "
+            f"(seen {h['seen']}x in {', '.join(h['engagements'])}){tail}")
+
+
 def cmd_recall(args):
     hits = api.recall(args.name, args.id)
-    _emit(args, hits, "\n".join(
-        f"{'✓' if h['confirmed'] else '?'} {h['technique']} "
-        f"(seen {h['seen']}x in {', '.join(h['engagements'])})"
-        for h in hits) or "no history for a node like this")
+    _emit(args, hits, "\n".join(_recall_line(h) for h in hits)
+          or "no history for a node like this")
 
 
 def cmd_suggest(args):
@@ -491,8 +500,9 @@ def cmd_suggest(args):
     for nid, hits in sug.items():
         print(f"{nid}:")
         for h in hits:
+            tail = " [generic]" if h.get("generic") else ""
             print(f"  {'✓' if h['confirmed'] else '?'} {h['technique']} "
-                  f"({', '.join(h['engagements'])})")
+                  f"({', '.join(h['engagements'])}){tail}")
 
 
 def cmd_delta(args):

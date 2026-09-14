@@ -146,6 +146,14 @@ class TestBudget(Base):
 
 # --- 5. technique recall ------------------------------------------------------
 
+class _N:
+    """A bare node for signature() -- it reads only kind, label and props, so a
+    real Node (and an engagement to hold one) is more setup than the unit needs."""
+
+    def __init__(self, kind, label, props):
+        self.kind, self.label, self.props = kind, label, props
+
+
 class TestRecall(Base):
 
     def test_recalls_a_technique_from_another_engagement(self):
@@ -180,6 +188,66 @@ class TestRecall(Base):
                      epistemic="refuted")
         api.add_node("t", "host", "p", node_id="host:p", props={"role": "http"})
         self.assertEqual(api.recall("t", "host:p"), [])
+
+    def test_signature_reads_the_props_the_ingest_actually_writes(self):
+        """`ports`/`role` are what signature() used to read; `import --nmap`
+        writes `port`/`proto`/`product`. Reading the wrong keys left 111 of 113
+        real nodes with an empty hint tuple, so every service matched every
+        service technique."""
+        n = _N(kind="service", label="ssh OpenSSH 8.9p1 :22",
+               props={"port": "22", "proto": "tcp", "product": "OpenSSH"})
+        self.assertEqual(recall.signature(n), ("service", ("ssh",)))
+
+    def test_signature_reads_the_label_when_there_are_no_props(self):
+        """A hand-made service node carries no port prop and puts the service
+        name in the label. Those were 30 of the store's service nodes."""
+        n = _N(kind="service", label="http nginx 1.18.0 :80", props={})
+        self.assertEqual(recall.signature(n), ("service", ("http",)))
+
+    def test_https_does_not_also_register_as_http(self):
+        """'https' contains 'http', which would split one surface into two."""
+        n = _N(kind="service", label="https", props={"port": "443"})
+        self.assertEqual(recall.signature(n), ("service", ("https",)))
+
+    def test_a_missed_hint_falls_back_to_generic_not_to_everything(self):
+        """The fallback returned every technique of the KIND, so an SSH service
+        was handed a web app's techniques from another box. It is now the
+        no-hint bucket only, and those hits say so."""
+        api.create("past")
+        api.add_node("past", "service", "ldap on dc", node_id="service:ldap",
+                     props={"port": "389"})
+        api.add_node("past", "technique", "LDAP thing", node_id="technique:l")
+        api.add_edge("past", "service:ldap", "applies-technique", "technique:l",
+                     epistemic="verified")
+        api.add_node("past", "service", "something unlabelled",
+                     node_id="service:plain", props={})
+        api.add_node("past", "technique", "Generic thing", node_id="technique:g")
+        api.add_edge("past", "service:plain", "applies-technique",
+                     "technique:g", epistemic="verified")
+
+        api.add_node("t", "service", "ssh", node_id="service:ssh",
+                     props={"port": "22"})
+        got = api.recall("t", "service:ssh")
+        names = [h["technique"] for h in got]
+        self.assertIn("Generic thing", names)
+        self.assertNotIn("LDAP thing", names)     # an LDAP claim is not an SSH claim
+        self.assertTrue(got[0]["generic"])
+
+    def test_overlapping_hints_still_match(self):
+        """Equal tuples only would miss the same surface seen at two
+        resolutions, and the fallback then handed back everything."""
+        api.create("past")
+        api.add_node("past", "service", "web app", node_id="service:w",
+                     props={"port": "80"})
+        api.add_node("past", "technique", "Web thing", node_id="technique:w")
+        api.add_edge("past", "service:w", "applies-technique", "technique:w",
+                     epistemic="verified")
+
+        api.add_node("t", "service", "http api endpoint", node_id="service:api",
+                     props={"port": "80"})
+        got = api.recall("t", "service:api")
+        self.assertEqual([h["technique"] for h in got], ["Web thing"])
+        self.assertFalse(got[0]["generic"])
 
     def test_suggestions_only_cover_what_is_reachable(self):
         """Suggesting a technique for an unreachable host is noise, and noise is
