@@ -106,6 +106,33 @@ def add_node(name, kind, label, node_id=None, epistemic="unexplored",
     if kind == "objective":
         status = _one_of(status or "open", OBJECTIVE_STATUS, "objective status")
     nid = node_id or slug(kind, label)
+    # The fold merges props and label onto an existing node and DISCARDS every state field
+    # (model.py, add_node branch: "idempotent: merge, never clobber"). That merge is correct --
+    # `import` re-emits add_node for every host, so a clobbering add would silently demote a
+    # host you have since acquired every time recon-seed re-runs after a revert.
+    #
+    # What is NOT correct is accepting state here and reporting success. cohort 2026-09-16: a Com
+    # re-established a foothold and recorded it with `add --exploitation acquired`; exit 0, node id
+    # printed, state dropped. The host read `discovered` while its own label said execution was
+    # held, so two verdict-time floor checks that gate on acquired could never fire and nobody
+    # learned why. Across the stored engagements 25 of 898 add_node events dropped state this way.
+    #
+    # So refuse at the boundary rather than changing the fold. Bulk import is unaffected: it goes
+    # through apply_events -> store.append_many and never reaches this function.
+    if nid in store.load(name).nodes:
+        _dropped = []
+        if exploitation != "discovered": _dropped.append(("exploitation", exploitation, f"reckon hold {nid} {exploitation}"))
+        if epistemic != "unexplored":    _dropped.append(("epistemic", epistemic, f"reckon state {nid} {epistemic}"))
+        if confidence is not None:       _dropped.append(("confidence", confidence, f"reckon state {nid} <epistemic> --conf {confidence}"))
+        if source is not None:           _dropped.append(("source", source, f"reckon state {nid} <epistemic> --source {source}"))
+        if status is not None:           _dropped.append(("status", status, f"reckon obj {nid} {status}"))
+        if _dropped:
+            lines = [f"{nid} already exists; `add` merges props and label only, so these "
+                     f"would be silently discarded:"]
+            for f_, v, fix in _dropped:
+                lines.append(f"  {f_}={v!r}  ->  {fix}")
+            lines.append("Re-run without them to update props/label, or use the verb named above.")
+            raise ValidationError("\n".join(lines))
     store.append(name, "add_node", {
         "id": nid, "kind": kind, "label": label, "props": props,
         "epistemic": epistemic, "exploitation": exploitation,
