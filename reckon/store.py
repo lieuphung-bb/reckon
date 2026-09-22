@@ -102,6 +102,27 @@ class SchemaTooNew(StoreError):
     pass
 
 
+class ReadOnlyRefused(StoreError):
+    pass
+
+
+def readonly_enabled(env=None) -> bool:
+    """Whether writes are refused: `$RECKON_READONLY`.
+
+    Same truthy convention as `autorender_enabled` — "1", "true", "yes", "on"
+    (case-insensitive). Anything else, including unset or empty, is off.
+
+    This is the hard write-guard: a `--falsify` audit session's Bash allowlist
+    cannot distinguish a read-shaped `reckon` invocation from a write-shaped
+    one, because both are the same tool call. The guard does not live in the
+    allowlist; it lives at the one place every mutating op converges —
+    `append`/`append_many` — so no call site, present or future, can bypass it
+    by routing around a CLI check.
+    """
+    env = os.environ if env is None else env
+    return (env.get("RECKON_READONLY") or "").strip().lower() in _TRUTHY
+
+
 def path_for(name: str) -> str:
     if not name or "/" in name or name.startswith("."):
         raise StoreError(f"invalid engagement name: {name!r}")
@@ -226,6 +247,9 @@ def next_seq(name: str) -> int:
 
 def append(name: str, op: str, args: dict, by: str | None = None) -> dict:
     """Append one event under an exclusive lock. Returns the event as written."""
+    if readonly_enabled():
+        raise ReadOnlyRefused(
+            f"reckon: RECKON_READONLY is set — refusing to write op {op!r}")
     return append_many(name, [{"op": op, "args": args}], by=by)[0]
 
 
@@ -243,7 +267,17 @@ def append_many(name: str, events: list, by: str | None = None) -> list:
     adjudication from an agent recording its own success, which is the difference
     the variable exists to capture. One choke point cannot be forgotten by a new
     call site.
+
+    Guarded the same way at this second entry point (`plan_add`'s batch and the
+    ingest-events path call this directly, not through `append`), so neither
+    entry point can be forgotten independently: checked before the lock is
+    taken and before the file is opened, so a refused write leaves no partial
+    state and no lock contention.
     """
+    if readonly_enabled():
+        op = events[0]["op"] if events else "?"
+        raise ReadOnlyRefused(
+            f"reckon: RECKON_READONLY is set — refusing to write op {op!r}")
     by = by or os.environ.get("RECKON_AGENT") or None
     path = path_for(name)
     os.makedirs(ENGAGEMENTS, exist_ok=True)
