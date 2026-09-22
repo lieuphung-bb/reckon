@@ -14,6 +14,19 @@ wrong one — it makes the reader re-derive the procedure before they can move.
 from datetime import datetime, timezone
 
 
+def headline(text, width=100) -> str:
+    """First line of a record body, truncated to a sane width.
+
+    `--brief` never invents a summary field a record does not have; this is
+    the fallback when there isn't one — the body's own first line, capped so
+    a long rationale or finding does not smuggle itself back in wholesale.
+    """
+    first = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    if len(first) > width:
+        return first[:width].rstrip() + "…"
+    return first
+
+
 def _node(n) -> str:
     """`label (kind, epistemic)` — never a bare id, per §9.6."""
     bits = [n.get("kind")]
@@ -91,7 +104,7 @@ def _resume(h, block, plural) -> list:
     return out
 
 
-def handoff(h: dict) -> str:
+def handoff(h: dict, brief: bool = False) -> str:
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     out = [f"# Handoff — {h['engagement']}", "",
            f"*seq {h['seq']} · {ts}*", ""]
@@ -165,11 +178,20 @@ def handoff(h: dict) -> str:
         A("Do not re-propose these without new information:")
         A("")
         for d in h["ruled_out"]:
-            line = f"- **chose** {d['chose']}"
-            if d.get("rejected"):
-                line += f" · **rejected** {', '.join(d['rejected'])}"
-            if d.get("reason"):
-                line += f" · because {d['reason']}"
+            if brief:
+                # STRUCTURE stays (this is still one line per decision); the
+                # BODY — the rationale, which can run to paragraphs — is
+                # replaced by a headline and the pointer to pull it back.
+                line = f"- **chose** {d['chose']}"
+                if d.get("reason"):
+                    line += f" — {headline(d['reason'])}"
+                line += f" (`dec:{d['seq']}`)"
+            else:
+                line = f"- **chose** {d['chose']}"
+                if d.get("rejected"):
+                    line += f" · **rejected** {', '.join(d['rejected'])}"
+                if d.get("reason"):
+                    line += f" · because {d['reason']}"
             A(line)
         A("")
 

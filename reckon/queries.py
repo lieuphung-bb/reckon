@@ -407,13 +407,26 @@ def _canon_method(m: str) -> str:
 
 
 def _service_host(g, s):
-    """The host node id a service sits on: its `requires` target, else props.host."""
+    """The host node id a service sits on: its `requires` target, else props.host,
+    else the source of an incoming `holds` edge from a host node.
+
+    The first two paths win whenever they resolve -- the holds-edge fallback only
+    covers a service whose host link exists ONLY as `host:... holds service:...`.
+    """
     for req in (s.props or {}).get("requires") or []:
         t = req.get("target")
         if t and str(t).startswith("host:"):
             return t
     h = (s.props or {}).get("host")
-    return f"host:{h}" if h else None
+    if h:
+        return f"host:{h}"
+    for e in g.in_edges(s.id):
+        if e.rel != "holds":
+            continue
+        src = g.nodes.get(e.src)
+        if src and src.kind == "host":
+            return src.id
+    return None
 
 
 def _service_surfaces(s) -> list:
@@ -845,6 +858,49 @@ def unentered(g) -> list:
                         f"enter — enter it, or record an attempt and earn the negative."),
             })
     out.sort(key=lambda x: x["host"])
+    return out
+
+
+def unexercised_reachable_service(g) -> list:
+    """A service reachable through access we already hold, never exercised -- the
+    SERVICE-grain unearned negative, one level finer than `unentered`. A held
+    foothold with a live `reaches` edge into a service that was never touched is
+    a door on the floor we already stand on, exactly like `unentered` is for
+    hosts on a segment we occupy.
+
+    Fires per service, only while ALL hold: the service is not superseded and
+    not refuted; it is the dst of at least one `reaches` edge whose src node
+    exists and is not superseded (reachable through a held foothold, the gate);
+    its exploitation has not reached `_ENTERED`; and it carries no incoming
+    `tested-against` edge -- an attempt, success or fail, earns the negative and
+    clears it, same rule as `_entry_attempted`.
+    """
+    out = []
+    for s in g.by_kind("service"):
+        if s.epistemic == "refuted":
+            continue
+        if s.exploitation in _ENTERED:
+            continue
+        if any(e.rel == "tested-against" for e in g.in_edges(s.id)):
+            continue
+        reachers = [e.src for e in g.in_edges(s.id)
+                    if e.rel == "reaches" and g.nodes.get(e.src)
+                    and not g.nodes[e.src].superseded_by]
+        if not reachers:
+            continue                      # not reachable through anything we hold
+        # Carry the reacher's LABEL into `why`, not just its id -- a row that
+        # only says "access already held" reads as stale to a Com that believes
+        # its own channel is refused. Name the door AND what opens it.
+        reacher_label = g.nodes[reachers[0]].label
+        out.append({
+            "id": f"{s.id}#unexercised", "service": s.id, "label": s.label,
+            "host": _service_host(g, s),
+            "via": reachers,
+            "why": (f"the {reacher_label} you already hold reaches service "
+                    f"'{s.label}', never exercised — exercise it or record an "
+                    f"attempt before calling it exhausted."),
+        })
+    out.sort(key=lambda x: x["service"])
     return out
 
 

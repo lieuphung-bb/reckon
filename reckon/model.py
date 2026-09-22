@@ -28,7 +28,14 @@ KINDS = (
 RELS = (
     "holds", "grants-access-to", "escalates-to", "depends-on", "evidenced-by",
     "tested-against", "achieves", "applies-technique", "contains", "supersedes",
+    "reaches",
 )
+
+# `reaches`: access already held can reach this service. src is any
+# foothold-bearing node, dst is a service; src kind is intentionally
+# unconstrained here (a host, a cred, whatever holds the foothold can be the
+# src) -- A13 (`unexercised_reachable_service`) reads this edge to name the
+# door that a held foothold opens but nobody has walked through yet.
 
 # Only these relations move the operator through the graph. `depends-on`,
 # `evidenced-by` and friends are analytical links, not access.

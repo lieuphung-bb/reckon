@@ -22,7 +22,8 @@ from .queries import (frontier, unrealized, unmined, stale, why,
                       unentered)
 from .redact import redact_graph, redact_obj, redact_text
 from .render.board import board
-from .render.handoff import handoff as render_handoff, fleet as render_fleet
+from .render.handoff import (handoff as render_handoff, fleet as render_fleet,
+                             headline as _headline)
 from .render.checkpoint import checkpoint as render_checkpoint
 from .render.views import VIEWS
 
@@ -312,7 +313,7 @@ def cmd_handoff(args):
     h = api.handoff(args.name, agent=args.agent, all_agents=args.all)
     if getattr(args, "redact", False):
         h = redact_obj(h)
-    text = render_handoff(h)
+    text = render_handoff(h, brief=getattr(args, "brief", False))
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, "w", encoding="utf-8") as fh:
@@ -513,6 +514,7 @@ def cmd_delta(args):
     if not d["events"]:
         print(f"nothing new since seq {d['from_seq']}")
         return
+    brief = getattr(args, "brief", False)
     print(f"# Since seq {d['from_seq']} → {d['to_seq']} ({d['events']} events)\n")
     def show(title, items, fmt):
         if items:
@@ -532,8 +534,21 @@ def cmd_delta(args):
     show("⚠ new unentered", d["new_unentered"], lambda i: f"{i['label']}")
     show("✓ cleared unentered", d["cleared_unentered"], lambda i: f"{i['label']}")
     show("resolved", d["resolved"], lambda i: f"{i['id']}: {i['from']} → {i['to']}")
-    show("new nodes", d["new_nodes"], lambda i: f"{i['kind']} {i['label']}")
-    show("decisions", d["decisions"], lambda i: f"{i['chose']} — {i['reason']}")
+    if brief:
+        # STRUCTURE (the section, the count) stays; a finding's full label —
+        # its body — becomes a headline plus the id so the reader can pull it
+        # back deliberately. Other kinds already carry short labels, so they
+        # are left as they render today.
+        show("new nodes", d["new_nodes"],
+             lambda i: (f"{i['kind']} {_headline(i['label'])} (`{i['id']}`)"
+                        if i["kind"] == "finding" else f"{i['kind']} {i['label']}"))
+        show("decisions", d["decisions"],
+             lambda i: (f"{i['chose']}"
+                        + (f" — {_headline(i['reason'])}" if i.get("reason") else "")
+                        + f" (`dec:{i['seq']}`)"))
+    else:
+        show("new nodes", d["new_nodes"], lambda i: f"{i['kind']} {i['label']}")
+        show("decisions", d["decisions"], lambda i: f"{i['chose']} — {i['reason']}")
     show("⚠ BUDGET BLOWN", d["budget_blown"], lambda i: f"{i['label']}: {i['advice']}")
 
 
@@ -705,6 +720,9 @@ def build_parser():
                    help="every active plan, stalled first")
     s.add_argument("--out", help="write to a file instead of stdout")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--brief", action="store_true",
+                   help="ruled-out decisions as headline + id, not the full "
+                        "rationale — structure unchanged")
     s.add_argument("--redact", action="store_true"); s.set_defaults(func=cmd_handoff)
 
     s = sub.add_parser("fleet", help="where every agent is right now")
@@ -784,6 +802,9 @@ def build_parser():
 
     s = sub.add_parser("delta", help="what changed since you last looked")
     s.add_argument("--since", type=int); s.add_argument("--json", action="store_true")
+    s.add_argument("--brief", action="store_true",
+                   help="finding/decision bodies as headline + id, not the "
+                        "full text — counts and structure unchanged")
     s.set_defaults(func=cmd_delta)
 
     s = sub.add_parser("recall", help="techniques used on nodes like this before")
