@@ -63,6 +63,21 @@ class TestValidation(Base):
         with self.assertRaises(api.ValidationError):
             api.parse_requires(["host:dc01@high"])
 
+    def test_reaches_relation_round_trips(self):
+        """`reaches`: access already held can reach this service (A13's edge).
+        Round-trips through the store, not just the in-memory fold."""
+        api.add_node("t", "host", "foothold", node_id="host:foothold",
+                     epistemic="verified", exploitation="acquired")
+        api.add_node("t", "service", "internal api", node_id="service:internal-api",
+                     epistemic="verified")
+        api.add_edge("t", "host:foothold", "reaches", "service:internal-api",
+                     epistemic="verified")
+        g = store.load("t")
+        edge = g.edges["host:foothold--reaches--service:internal-api"]
+        self.assertEqual(edge.rel, "reaches")
+        self.assertEqual(edge.src, "host:foothold")
+        self.assertEqual(edge.dst, "service:internal-api")
+
     def test_valid_writes_still_work(self):
         api.add_node("t", "host", "a", node_id="host:a", epistemic="verified")
         api.add_node("t", "objective", "own a", node_id="obj:a",

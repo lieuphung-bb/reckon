@@ -21,7 +21,7 @@ from .reference import make_reference
 from .queries import (frontier, unrealized, unmined, stale, coverage, why,
                       verification_queue, reach, budget, unswept,
                       blocked_but_unswept, untried, blocked_but_untried,
-                      unentered,
+                      unentered, unexercised_reachable_service,
                       delta as _delta, DEFAULT_BUDGET)
 from . import recall as _recall
 
@@ -876,6 +876,10 @@ ALARM_REGISTRY = (
     # untried surface, but a HOST on a segment we already occupy that nobody ever tried.
     ("A12", "unentered-host", ENGAGEMENT, True,
      "a host on a segment we already hold access on, never entered or attempted"),
+    # A13 is the same unearned negative one level finer than A12: not a host on a
+    # segment we occupy, but a SERVICE reachable through a foothold we already hold.
+    ("A13", "unexercised-reachable-service", ENGAGEMENT, True,
+     "a service reachable through access already held, never exercised or attempted"),
 )
 
 DARK_ALARMS = tuple(a for a in ALARM_REGISTRY if not a[3])
@@ -1070,6 +1074,15 @@ def alarms(name, since: int | None = None) -> list:
             "group": ENGAGEMENT, "severity": "warn",
             "why": b["why"],
             "detail": {"creds": b["creds"], "untried": b["detail"]}})
+
+    # A13: a service reachable through a foothold we already hold, never exercised
+    # or attempted -- the same unearned negative as A12, one grain finer.
+    for u in unexercised_reachable_service(g):
+        out.append({
+            "id": f"A13/{u['service']}", "name": "unexercised-reachable-service",
+            "group": ENGAGEMENT, "severity": "warn",
+            "why": u["why"],
+            "detail": {"service": u["service"], "host": u["host"], "via": u["via"]}})
 
     return out
 
