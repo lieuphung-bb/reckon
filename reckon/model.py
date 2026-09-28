@@ -27,8 +27,8 @@ KINDS = (
 
 RELS = (
     "holds", "grants-access-to", "escalates-to", "depends-on", "evidenced-by",
-    "tested-against", "achieves", "applies-technique", "contains", "supersedes",
-    "reaches",
+    "tested-against", "capability-probed", "achieves", "applies-technique",
+    "contains", "supersedes", "reaches",
 )
 
 # `reaches`: access already held can reach this service. src is any

@@ -1012,6 +1012,182 @@ def blocked_but_untried(g) -> list:
     }]
 
 
+# --- A14: a prior identity's write/ACL negative, gone stale on identity gain ---
+#
+# The failure this closes (the exhaust-owned-access family). Under identity P1 a
+# write/ACL probe against a share/ACL resource R was refused, or R's write
+# capability was never confirmed at all. Later a NEW identity P2 is gained
+# (`set_exploitation acquired` stamps `acquired_at`). The refusal was P1's; it
+# says nothing about P2 -- yet "we already tested that share, it's refused" keeps
+# anyone from re-probing R under P2. A14 raises exactly that: an untested write/ACL
+# capability for the newly-gained identity.
+#
+# Two hard design points, each the point of the fix:
+#
+#  * It keys on RECORDED PROBE EVIDENCE and the principal that earned it, never on
+#    the `examined` flag. `examined` carries no principal, so it cannot tell
+#    "examined-for-write-as-P1" from "untested-as-P2"; an alarm that consulted it
+#    would repeat the foothold-floor flaw and go silent exactly when it must fire.
+#    This query does not read `examined` anywhere.
+#
+#  * The clearing predicate is PRINCIPAL-SCOPED. A14(P,R) clears only when a
+#    `capability-probed` edge whose SRC is P (verified OR refuted) is recorded. A
+#    prior principal's refuted edge is the TRIGGER, not the clear -- any-src
+#    clearing would let P1's own refusal silence the alarm about P2.
+#
+# Scope is restricted to share/ACL access-write surfaces (`_WRITE_ACL_SURFACES`).
+# Per-account credential-guess negatives (ad-auth/webapp/ssh/db/ftp -- what
+# `apply-cred` records) are deliberately excluded: re-opening those on one
+# identity gain emits 13-20+ rows = flood. Identity-invariant technique/version
+# dead-ends never carry a write/ACL surface, so they stay silent here too. A14
+# raises an alarm only; it never mutates or un-refutes the prior principal's edge.
+
+# A cred is reckon's identity-bearing node and the conventional SRC of a
+# `tested-against` edge (see `_cred_tried_kinds`). If the model later grows a
+# distinct principal kind, add it here.
+_PRINCIPAL_KINDS = ("cred",)
+
+# The share/ACL access-write surface family. A recorder (cerebrate
+# `record-probe`) stamps one of these on a principal-scoped `capability-probed`
+# edge's `surface` prop, or on a resource node it registers. This set is the
+# whole scope gate: it is what keeps per-account cred-guess and technique/version
+# negatives OUT of A14.
+_WRITE_ACL_SURFACES = frozenset({
+    "share", "share-write", "acl", "write", "fs-write", "smb-write",
+})
+
+
+def _edge_surface(e) -> str | None:
+    return (e.props or {}).get("surface")
+
+
+def _is_write_acl_negative(e) -> bool:
+    """A `capability-probed` edge that recorded a write/ACL NEGATIVE: refuted, or
+    carrying a failed attempt with no success. A verified/succeeded edge is a
+    POSITIVE and never a negative. The surface-family check is the scope gate --
+    removing it re-opens per-account cred-guess and technique negatives (flood)."""
+    if e.rel != "capability-probed":
+        return False
+    if _edge_surface(e) not in _WRITE_ACL_SURFACES:
+        return False
+    if e.epistemic == "verified" or e.succeeded:
+        return False
+    return e.epistemic == "refuted" or e.failed_attempts > 0
+
+
+def _write_acl_confirmed(g, r_id) -> bool:
+    """Any principal has a VERIFIED/succeeded write/ACL `capability-probed` edge to
+    R -- write capability positively established, so R is not an unread absence."""
+    for e in g.in_edges(r_id):
+        if e.rel != "capability-probed" or _edge_surface(e) not in _WRITE_ACL_SURFACES:
+            continue
+        if e.epistemic == "verified" or e.succeeded:
+            return True
+    return False
+
+
+def _principal_probed(g, p_id, r_id) -> bool:
+    """PRINCIPAL-SCOPED clearing predicate: P itself recorded a `capability-probed`
+    edge to R (verified OR refuted). This -- and only this -- clears A14(P,R). A
+    prior principal's edge does NOT clear it, and `examined` is not consulted."""
+    return any(e.rel == "capability-probed" and e.dst == r_id
+               for e in g.out_edges(p_id))
+
+
+def _acquired_principals(g) -> list:
+    """Principals gained as a genuine identity: `acquired_at` stamped (by
+    `set_exploitation acquired`) and not superseded."""
+    return [n for n in g.nodes.values()
+            if n.kind in _PRINCIPAL_KINDS and not n.superseded_by
+            and n.acquired_at is not None]
+
+
+def stale_negative_on_identity_gain(g) -> list:
+    """A share/ACL write negative recorded under a PRIOR identity, never re-probed
+    by a newly-gained one. Fires one row per (principal P, resource R) when:
+
+      1. P is a principal with `acquired_at` set (a genuinely-gained identity);
+      2. a prior-identity write/ACL negative toward R exists -- a refuted/failed
+         write/ACL `capability-probed` edge whose SRC principal != P (recorded case),
+         OR R is a write/ACL resource whose write capability nobody confirmed and
+         that predates P's identity gain (absence case);
+      3. P has NO `capability-probed` edge to R (P never probed it);
+      4. R is a graph-resident resource node, one row per (P,R).
+
+    Deliberately does not read `examined`; clears only on a P-scoped probe.
+    """
+    principals = _acquired_principals(g)
+    if len(principals) < 1:
+        return []
+
+    # (case a) resources carrying a prior write/ACL NEGATIVE, by the principals
+    # that recorded it.
+    neg_by_r: dict = {}
+    for e in g.edges.values():
+        if not _is_write_acl_negative(e):
+            continue
+        src = g.nodes.get(e.src)
+        if src and src.kind in _PRINCIPAL_KINDS:
+            neg_by_r.setdefault(e.dst, set()).add(e.src)
+
+    # (case b) write/ACL resource nodes whose write capability was never
+    # confirmed by anyone -- the "unreadable to the prior principal" absence.
+    absence_r = set()
+    for n in g.nodes.values():
+        if n.superseded_by:
+            continue
+        if (n.props or {}).get("surface") in _WRITE_ACL_SURFACES \
+                and not _write_acl_confirmed(g, n.id):
+            absence_r.add(n.id)
+
+    candidate_r = set(neg_by_r) | absence_r
+    if not candidate_r:
+        return []
+
+    out = []
+    for P in sorted(principals, key=lambda n: n.id):
+        for r_id in sorted(candidate_r):
+            R = g.nodes.get(r_id)
+            if not R or R.superseded_by:
+                continue
+            if r_id == P.id or R.kind in _PRINCIPAL_KINDS + ("operator", "objective"):
+                continue
+            # (3) principal-scoped clearing -- the load-bearing gate.
+            if _principal_probed(g, P.id, r_id):
+                continue
+            # (2a) a prior principal's write/ACL negative.
+            prior_negs = sorted(neg_by_r.get(r_id, set()) - {P.id})
+            # (2b) absence: an unconfirmed write/ACL resource that predates this
+            # identity gain, with another principal in play (a genuine PRIOR
+            # identity -- not just this one credential sitting alone).
+            absence = (r_id in absence_r
+                       and R.first_seen <= (P.acquired_at or 0)
+                       and any(o.id != P.id for o in principals))
+            if not prior_negs and not absence:
+                continue
+            case = "recorded-negative" if prior_negs else "absence"
+            why = (f"identity '{P.label}' was gained after a write/ACL negative on "
+                   f"'{R.label}' under {prior_negs or 'a prior identity'} — that "
+                   f"refusal was not {P.label}'s and says nothing about it. "
+                   f"'{P.label}' has never probed '{R.label}'; re-test write/ACL "
+                   f"with the new identity, or record a capability-probed edge from "
+                   f"'{P.id}' before treating it as still refused."
+                   if case == "recorded-negative" else
+                   f"identity '{P.label}' was gained, but write/ACL capability on "
+                   f"'{R.label}' was never confirmed under any prior identity and "
+                   f"'{P.label}' has never probed it — test write/ACL with the new "
+                   f"identity or record a capability-probed edge from '{P.id}'.")
+            out.append({
+                "id": f"{P.id}=>{r_id}#stale-neg",
+                "principal": P.id, "principal_label": P.label,
+                "resource": r_id, "resource_label": R.label,
+                "case": case, "prior_principals": prior_negs,
+                "why": why,
+            })
+    out.sort(key=lambda x: (x["principal"], x["resource"]))
+    return out
+
+
 # --- feature 1: the delta board ----------------------------------------------
 
 def _alarm_ids(g):
@@ -1021,7 +1197,8 @@ def _alarm_ids(g):
             {o["id"] for o in frontier(g)["reachable_now"]},
             {u["id"] for u in unswept(g)},
             {u["id"] for u in untried(g)},
-            {u["id"] for u in unentered(g)})
+            {u["id"] for u in unentered(g)},
+            {u["id"] for u in stale_negative_on_identity_gain(g)})
 
 
 def delta(before, after) -> dict:
@@ -1031,8 +1208,8 @@ def delta(before, after) -> dict:
     want the CHANGE in state. A 60-node board becomes three lines, and stays
     three lines however large the engagement grows.
     """
-    b_unreal, b_unmined, b_stale, b_now, b_unswept, b_untried, b_unent = _alarm_ids(before)
-    a_unreal, a_unmined, a_stale, a_now, a_unswept, a_untried, a_unent = _alarm_ids(after)
+    b_unreal, b_unmined, b_stale, b_now, b_unswept, b_untried, b_unent, b_staleneg = _alarm_ids(before)
+    a_unreal, a_unmined, a_stale, a_now, a_unswept, a_untried, a_unent, a_staleneg = _alarm_ids(after)
 
     def label(nid):
         n = after.nodes.get(nid)
@@ -1056,6 +1233,13 @@ def delta(before, after) -> dict:
 
     def unentlabel(nid):
         return unentered_after.get(nid, nid)
+
+    staleneg_after = {u["id"]: f"{u['principal_label']} never re-probed "
+                              f"{u['resource_label']} (write/ACL)"
+                      for u in stale_negative_on_identity_gain(after)}
+
+    def stalneglabel(nid):
+        return staleneg_after.get(nid, nid)
 
     newly_winnable = [{"id": i, "label": label(i)} for i in a_now - b_now]
     resolved = []
@@ -1088,6 +1272,10 @@ def delta(before, after) -> dict:
         "cleared_untried": [{"id": i, "label": untlabel(i)} for i in b_untried - a_untried],
         "new_unentered": [{"id": i, "label": unentlabel(i)} for i in a_unent - b_unent],
         "cleared_unentered": [{"id": i, "label": unentlabel(i)} for i in b_unent - a_unent],
+        "new_stale_negative": [{"id": i, "label": stalneglabel(i)}
+                               for i in a_staleneg - b_staleneg],
+        "cleared_stale_negative": [{"id": i, "label": stalneglabel(i)}
+                                   for i in b_staleneg - a_staleneg],
         "resolved": resolved,
         "decisions": [d for d in after.decisions if d["seq"] > before.seq],
         "budget_blown": budget(after),

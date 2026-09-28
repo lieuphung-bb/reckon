@@ -22,6 +22,7 @@ from .queries import (frontier, unrealized, unmined, stale, coverage, why,
                       verification_queue, reach, budget, unswept,
                       blocked_but_unswept, untried, blocked_but_untried,
                       unentered, unexercised_reachable_service,
+                      stale_negative_on_identity_gain,
                       delta as _delta, DEFAULT_BUDGET)
 from . import recall as _recall
 
@@ -880,6 +881,11 @@ ALARM_REGISTRY = (
     # segment we occupy, but a SERVICE reachable through a foothold we already hold.
     ("A13", "unexercised-reachable-service", ENGAGEMENT, True,
      "a service reachable through access already held, never exercised or attempted"),
+    # A14 is the unearned negative across an IDENTITY boundary: a share/ACL write
+    # negative recorded under a prior identity, never re-probed by a newly-gained
+    # one. Keys on principal-scoped probe evidence, never on `examined`.
+    ("A14", "stale-negative-on-identity-gain", ENGAGEMENT, True,
+     "a prior identity's write/ACL negative, never re-probed after a new identity was gained"),
 )
 
 DARK_ALARMS = tuple(a for a in ALARM_REGISTRY if not a[3])
@@ -1083,6 +1089,17 @@ def alarms(name, since: int | None = None) -> list:
             "group": ENGAGEMENT, "severity": "warn",
             "why": u["why"],
             "detail": {"service": u["service"], "host": u["host"], "via": u["via"]}})
+
+    # A14: a prior identity's write/ACL negative that a newly-gained identity has
+    # never re-probed. The unearned negative across an identity boundary -- keyed
+    # on principal-scoped probe evidence, never on `examined`.
+    for u in stale_negative_on_identity_gain(g):
+        out.append({
+            "id": f"A14/{u['id']}", "name": "stale-negative-on-identity-gain",
+            "group": ENGAGEMENT, "severity": "warn",
+            "why": u["why"],
+            "detail": {"principal": u["principal"], "resource": u["resource"],
+                       "case": u["case"], "prior_principals": u["prior_principals"]}})
 
     return out
 
