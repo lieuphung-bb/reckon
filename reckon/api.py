@@ -12,6 +12,7 @@ found no such node, and the operator believed a fact had been recorded. A tool
 whose whole purpose is catching what you missed must never quietly miss.
 """
 
+import re
 from dataclasses import asdict
 
 from . import store
@@ -40,6 +41,31 @@ def _one_of(value, allowed, what):
         raise ValidationError(
             f"invalid {what}: {value!r}. Expected one of {', '.join(allowed)}")
     return value
+
+
+# A node label is read back into every successor brief and every Smi prompt (render/handoff/recall),
+# so a classifier REFUSAL SIGNATURE quoted verbatim in one re-walls them all: a log/label matcher
+# cannot tell quoting from emitting. bedside recorded the wall as finding labels that embedded the
+# verbatim signature (e.g. finding:codex-ingest-refusal) -- 9 such labels, 4 phantom refusals. The
+# rule (feedback_record_quoting_a_signature_poisons_the_matcher): the verbatim text belongs in a
+# note/artifact, never the label. This refuses it at the write boundary. The pattern is NARROW -- the
+# specific refusal signatures only, never generic negatives like "blocked"/"denied", which ingest.py
+# keys on to classify edges. Bulk import (apply_events -> append_many) bypasses this, like the other
+# add_node boundary checks.
+_LABEL_SIGNATURE = re.compile(
+    r"flagged for possible cybersecurity|safeguards flagged|"
+    r"Details:?\s*`?\[cyber\]|\[cyber\]|Trusted Access|Cyber Verification",
+    re.IGNORECASE)
+
+
+def _label_clean(label):
+    if label and _LABEL_SIGNATURE.search(label):
+        raise ValidationError(
+            "label contains a classifier refusal signature (e.g. '[cyber]', 'flagged for "
+            "possible cybersecurity', 'Trusted Access') -- a label is read back into every "
+            "successor and Smi, so this re-walls them. Paraphrase it in the label and put the "
+            "verbatim text in a note or artifact.")
+    return label
 
 
 def _agent(agent=None):
@@ -99,6 +125,7 @@ def add_node(name, kind, label, node_id=None, epistemic="unexplored",
     _one_of(kind, KINDS, "kind")
     _one_of(epistemic, EPISTEMIC, "epistemic state")
     _one_of(exploitation, EXPLOITATION, "exploitation state")
+    _label_clean(label)
     props = dict(props or {})
     if requires:
         props["requires"] = parse_requires(requires)
