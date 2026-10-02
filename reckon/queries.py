@@ -250,6 +250,44 @@ def stale(g) -> list:
     return out
 
 
+def unrecorded_hold(g) -> list:
+    """Access recorded against a host, but the host never marked acquired.
+
+    A `finding --grants-access-to--> host` edge records that access was ACHIEVED on
+    that host (a shell, an exec channel, a cred that logs in). If the host is still
+    `discovered`, the position lags the findings: every floor that gates on `held()`
+    is blind to it, and `com-resume` builds a brief with "findings but no position"
+    so a resume lands BEFORE the foothold. m11 2026-10-02: host:db01 carried
+    db01-rce / db01-interactive-shell findings granting access, exploitation stayed
+    `discovered`, `set_exploitation` was never called, and the dead Com's mid-recon
+    resumed stale.
+
+    Structural on the edge relation, NOT on a finding's label or the agent's
+    judgement -- so it does not inherit the judgement it audits (cf. foothold-floor).
+    Keyed on `grants-access-to` only: `escalates-to` is a reach/escalation PATH to a
+    not-yet-owned host (the DMZ DC), and operator-sourced access is mere reachability
+    (the entry host) -- neither means the host is held.
+    """
+    out = []
+    for n in g.nodes.values():
+        if n.superseded_by or n.kind != "host" or n.held:
+            continue
+        via = []
+        for e in g.edges.values():
+            if e.dst != n.id or e.rel != "grants-access-to" or e.epistemic == "refuted":
+                continue
+            src = g.nodes.get(e.src)
+            if src is not None and src.kind == "finding":
+                via.append(e.src)
+        if via:
+            out.append({
+                "id": n.id, "label": n.label, "exploitation": n.exploitation, "via": via,
+                "why": "a finding grants access to this host but it is not marked acquired -- "
+                       "record it (`set_exploitation " + n.id + " acquired`), or every "
+                       "held-gated floor and the resume brief miss the foothold"})
+    return out
+
+
 def coverage(g) -> dict:
     objs = g.objectives()
     by_status = {}
