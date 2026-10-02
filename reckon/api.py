@@ -19,7 +19,7 @@ from . import store
 from .model import (KINDS, RELS, EPISTEMIC, EXPLOITATION, OPERATOR_ID,
                     STEP_STATUS, BLOCKED_REASONS, BLOCKED_IMPLICATION, fold)
 from .reference import make_reference
-from .queries import (frontier, unrealized, unmined, stale, coverage, why,
+from .queries import (frontier, unrealized, unmined, stale, coverage, why, unrecorded_hold,
                       verification_queue, reach, budget, unswept,
                       blocked_but_unswept, untried, blocked_but_untried,
                       unentered, unexercised_reachable_service,
@@ -620,7 +620,8 @@ def handoff(name, agent=None, all_agents=False) -> dict:
                   and (g.nodes.get(nid) and g.nodes[nid].kind != "operator"
                        and not g.nodes[nid].superseded_by)],
         "alarms": {"unrealized": unrealized(g), "unmined": unmined(g),
-                   "stale": stale(g), "budget_blown": budget(g)},
+                   "stale": stale(g), "unrecorded_hold": unrecorded_hold(g),
+                   "budget_blown": budget(g)},
         "next_moves": {"unrealized": unrealized(g),
                        "queue": verification_queue(g),
                        "frontier": frontier(g)},
