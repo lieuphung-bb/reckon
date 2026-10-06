@@ -89,6 +89,16 @@ TOOLS = [
           ["src", "rel", "dst"]),
     _tool("set_state", "Promote or kill a hypothesis on a node or edge.",
           {"id": _S, "state": _S, "confidence": _S}, ["id", "state"]),
+    _tool("hold", "Advance a node's EXPLOITATION state: discovered -> acquired "
+                  "-> examined -> exhausted. `set_state` moves the EPISTEMIC "
+                  "axis (is it real); this moves the EXPLOITATION axis (what you "
+                  "hold on it). Marking a cred/host 'acquired' is what the "
+                  "`unmined` and held-gated coverage floors key on — recorded "
+                  "any other way (e.g. via add_node on an existing node) it is "
+                  "silently dropped, and those floors stay dark.",
+          {"id": _S, "state": {**_S, "description":
+                               "discovered|acquired|examined|exhausted"}},
+          ["id", "state"]),
     _tool("examine", "Mark an asset actually examined. The ONLY thing that clears "
                      "an unmined alarm — do not call it for a glance.",
           {"id": _S, "outcome": _S}, ["id"]),
@@ -171,8 +181,8 @@ def _eng(args):
 # already, and every read is absent because a read must never write: autorender
 # is a consequence of recording something, not of looking at it.
 WRITE_TOOLS = frozenset({
-    "add_node", "add_edge", "set_state", "examine", "set_objective", "attempt",
-    "decide", "note", "plan_add", "step_state", "change"})
+    "add_node", "add_edge", "set_state", "hold", "examine", "set_objective",
+    "attempt", "decide", "note", "plan_add", "step_state", "change"})
 
 
 def dispatch(tool: str, args: dict):
@@ -233,6 +243,8 @@ def _dispatch(tool: str, args: dict):
     if tool == "set_state":
         return api.set_epistemic(name, args["id"], args["state"],
                                  confidence=args.get("confidence"))
+    if tool == "hold":
+        return api.set_exploitation(name, args["id"], args["state"])
     if tool == "examine":
         return api.examine(name, args["id"], args.get("outcome", ""))
     if tool == "set_objective":
