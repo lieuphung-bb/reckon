@@ -14,6 +14,7 @@ and ordering them by how many objectives they gate ranks the cheapest next test.
 """
 
 import heapq
+import json
 import re
 
 from .model import ACCESS_RELS, OPERATOR_ID
@@ -839,6 +840,22 @@ def _host_addr(n) -> str | None:
     return None
 
 
+def _addr_in_text(text) -> bool:
+    """Whether a real IPv4 dotted-quad -- four 0-255 octets on word boundaries --
+    appears anywhere in `text`.
+
+    The same address shape `_host_addr` trusts, but asked of one arbitrary
+    string: A15 needs it over props JSON too, not only the id and label
+    `_host_addr` reads. `finditer`, not `search`, so a near-miss (`10.0.0.999`)
+    sitting before a real address does not mask it -- every candidate is octet-
+    checked, and the first VALID one wins.
+    """
+    for m in _ADDR_RE.finditer(text or ""):
+        if all(int(o) <= 255 for o in m.group(1).split(".")):
+            return True
+    return False
+
+
 def _segment(addr: str) -> str:
     """The /24. Coarse on purpose: a bridge, a lab subnet and a VLAN are all /24-ish in
     practice, and a wrong-but-coarse grouping still puts the untried door on the board.
@@ -896,6 +913,35 @@ def unentered(g) -> list:
                         f"enter — enter it, or record an attempt and earn the negative."),
             })
     out.sort(key=lambda x: x["host"])
+    return out
+
+
+def hostless_address(g) -> list:
+    """Host nodes that record their IPv4 in NO field -- not the id, the label,
+    or props (A15).
+
+    reckon keys a host only on its free-form node id. Its IP may live in the id,
+    in the label, or in props; when it is in none, there is nothing to dedup on,
+    so a later sighting of the same machine forks into a second, IP-based node
+    and the two nodes' edges split. Flagging the IP-less host is the cheap guard:
+    record the address and dedup becomes possible later.
+
+    A graph-quality (RECORDING) alarm, not an engagement-state one -- it is about
+    the INSTRUMENT, so it fires on `kind == "host"` only. A cred, finding or
+    service with no address is normal, never a fork hazard. A refuted host does
+    not exist, so it never fires; superseded hosts are already dropped by
+    `by_kind`.
+    """
+    out = []
+    for h in g.by_kind("host"):
+        if h.id == OPERATOR_ID or h.epistemic == "refuted":
+            continue
+        fields = (h.id, h.label or "",
+                  json.dumps(h.props, sort_keys=True, default=str))
+        if any(_addr_in_text(f) for f in fields):
+            continue
+        out.append({"id": h.id, "label": h.label})
+    out.sort(key=lambda x: x["id"])
     return out
 
 
