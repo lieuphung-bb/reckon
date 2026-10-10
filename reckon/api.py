@@ -23,7 +23,7 @@ from .queries import (frontier, unrealized, unmined, stale, coverage, why, unrec
                       verification_queue, reach, budget, unswept,
                       blocked_but_unswept, untried, blocked_but_untried,
                       unentered, unexercised_reachable_service,
-                      stale_negative_on_identity_gain,
+                      stale_negative_on_identity_gain, hostless_address,
                       delta as _delta, DEFAULT_BUDGET)
 from . import recall as _recall
 
@@ -914,6 +914,14 @@ ALARM_REGISTRY = (
     # one. Keys on principal-scoped probe evidence, never on `examined`.
     ("A14", "stale-negative-on-identity-gain", ENGAGEMENT, True,
      "a prior identity's write/ACL negative, never re-probed after a new identity was gained"),
+    # A15 is a RECORDING-health alarm, not an engagement one: it describes the
+    # INSTRUMENT. A host whose IPv4 is in no field -- not the id, not the label,
+    # not props -- cannot be deduped, so the same machine forks into two parallel
+    # nodes (one named, one IP-based) and their edges split. `--strict` gates on
+    # it like A1-A3.
+    ("A15", "host-without-address", RECORDING, True,
+     "a host node carries its IP in no field -- nothing to dedup on, so the same "
+     "host forks into parallel nodes"),
 )
 
 DARK_ALARMS = tuple(a for a in ALARM_REGISTRY if not a[3])
@@ -1034,6 +1042,21 @@ def alarms(name, since: int | None = None) -> list:
                                  if last_authored else None),
                        "last_call": max(when for when, _e in unrecorded)
                                     .isoformat()}})
+
+    # A15: a host node carrying its IPv4 in no field -- id, label or props. A
+    # RECORDING-health alarm (it describes the instrument: a host the graph
+    # cannot dedup on, which forks into parallel nodes), so it sits with A1-A3
+    # and `--strict` gates on it. Fires once per IP-less host.
+    for h in hostless_address(g):
+        out.append({
+            "id": f"A15/{h['id']}", "name": "host-without-address",
+            "group": RECORDING, "severity": "warn",
+            "why": (f"host '{h['label']}' carries its IP in no field -- not the "
+                    f"id, the label, or props. Nothing can dedup on it, so the "
+                    f"next sighting of this machine under another name forks a "
+                    f"second, IP-based node and their edges split. Record its "
+                    f"address."),
+            "detail": {"host": h["id"], "label": h["label"]}})
 
     if not [d for d in g.decisions if d.get("seq", 0) > frm]:
         out.append({

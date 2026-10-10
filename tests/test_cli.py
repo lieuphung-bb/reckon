@@ -36,8 +36,11 @@ class Base(unittest.TestCase):
         self._old = store.ENGAGEMENTS
         store.ENGAGEMENTS = self.tmp
         api.create("t")
+        # props carries the host's address so it is well-formed: an IP-less host
+        # trips A15 (host-without-address), a RECORDING alarm, which would make
+        # the strict-exit tests below see a recording alarm they do not intend.
         api.add_node("t", "host", "lab07", node_id="host:lab07",
-                     epistemic="verified")
+                     epistemic="verified", props={"ip": "10.129.10.7"})
         api.add_node("t", "objective", "to DA", node_id="obj:t21")
 
     def tearDown(self):

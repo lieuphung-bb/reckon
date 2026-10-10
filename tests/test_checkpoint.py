@@ -37,8 +37,11 @@ class Base(unittest.TestCase):
         # rendering checkpoint writing into the operator's real data root.
         store.OUT = os.path.join(self.tmp, "out")
         api.create("t")
+        # props carries the host's address so it is well-formed: an IP-less host
+        # trips A15 (host-without-address), a RECORDING alarm, which would make
+        # the strict-health tests below see a recording alarm they do not intend.
         api.add_node("t", "host", "lab07", node_id="host:lab07",
-                     epistemic="verified")
+                     epistemic="verified", props={"ip": "10.129.10.7"})
         api.add_edge("t", "operator:me", "grants-access-to", "host:lab07",
                      edge_id="e:op-lab07", epistemic="verified",
                      props={"rank": 3})
