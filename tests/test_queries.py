@@ -12,7 +12,7 @@ from reckon.model import fold, OPERATOR_ID
 from reckon.queries import (frontier, unrealized, unmined, stale, coverage, why,
                          verification_queue, reach, reach_pareto, unswept,
                          blocked_but_unswept, untried, blocked_but_untried,
-                         unentered)
+                         unentered, stale_negative_on_identity_gain)
 
 
 def ev(seq, op, **args):
@@ -582,6 +582,59 @@ class TestBlockedButUntried(unittest.TestCase):
                dst="host:dc", epistemic="verified"),
         ])
         self.assertEqual(blocked_but_untried(g), [])
+
+
+class TestUnminedCredSurfaceMarker(unittest.TestCase):
+    """A held credential whose structured `cred_surface` marker names the class of
+    surface it opens: `unmined`'s "mine what you hold" push ALSO points the reader at
+    the router for that class. The marker only ADDS a pointer — a credential without
+    it is flagged exactly as before, with byte-identical `why` text."""
+
+    def _acquired_cred(self, props=None):
+        return fold([
+            ev(1, "add_node", id="cred:svc", kind="cred", label="svc token",
+               props=(props or {})),
+            ev(2, "set_exploitation", id="cred:svc", state="acquired"),
+        ])
+
+    def test_marked_cred_why_names_the_router(self):
+        # (a) FIRES-WITH-MARKER: still unmined, and now routed to attack_router.
+        g = self._acquired_cred(props={"cred_surface": "ai"})
+        rows = [u for u in unmined(g) if u["id"] == "cred:svc"]
+        self.assertEqual(len(rows), 1)                    # still flagged
+        self.assertIn("attack_router", rows[0]["why"])    # and now routed
+
+    def test_unmarked_cred_why_is_byte_identical(self):
+        # (b) BYTE-IDENTICAL-WITHOUT-MARKER: still unmined, wording unchanged.
+        g = self._acquired_cred()
+        rows = [u for u in unmined(g) if u["id"] == "cred:svc"]
+        self.assertEqual(len(rows), 1)                    # still flagged
+        self.assertNotIn("attack_router", rows[0]["why"])
+        self.assertEqual(rows[0]["why"], "acquired, never examined")  # unchanged
+
+
+class TestCredSurfaceMarkerNotA14Resource(unittest.TestCase):
+    """The `cred_surface` marker is its OWN prop key. It must never be read as the
+    reserved `surface` key `stale_negative_on_identity_gain` checks against
+    `_WRITE_ACL_SURFACES` — a node carrying the AI marker is not a write/ACL
+    resource, even with acquired identities in play that would otherwise arm A14's
+    absence case."""
+
+    def test_ai_marker_node_does_not_appear_in_stale_negative(self):
+        # (c) A14-NON-COLLISION. Two acquired identities arm A14's absence case; the
+        # only candidate resource carries `cred_surface=ai`, NOT `surface`, so it is
+        # not a write/ACL resource and A14 stays silent.
+        g = fold([
+            ev(1, "add_node", id="cred:p1", kind="cred", label="p1"),
+            ev(2, "set_exploitation", id="cred:p1", state="acquired"),
+            ev(3, "add_node", id="cred:p2", kind="cred", label="p2"),
+            ev(4, "set_exploitation", id="cred:p2", state="acquired"),
+            ev(5, "add_node", id="artifact:ai-thing", kind="artifact",
+               label="ai surface", props={"cred_surface": "ai"}),
+        ])
+        out = stale_negative_on_identity_gain(g)
+        self.assertNotIn("artifact:ai-thing", [r["resource"] for r in out])
+        self.assertEqual(out, [])
 
 
 if __name__ == "__main__":

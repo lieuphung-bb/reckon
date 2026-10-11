@@ -177,6 +177,24 @@ def unrealized(g) -> list:
     return out
 
 
+# A credential node can carry a structured `cred_surface` marker naming the class
+# of surface it opens. When one is present, `unmined`'s "mine what you hold" push
+# ALSO names the router to consult for that class, so the reader is pointed at HOW
+# to mine the credential, not merely told that it is unmined. Data-keyed on the
+# marker VALUE so a new surface class is one row here, not new branching logic, and
+# the pointer text is a parameter with a default rather than a literal baked inline.
+#
+# Read below from the node's OWN `cred_surface` prop, in the entry construction --
+# never a label substring (a grep false-positives) and never `_cred_surface_kind`
+# (which classifies service/host nodes and is never called for creds). `cred_surface`
+# is its OWN key: it is deliberately NOT `surface`, the reserved write/ACL key that
+# `stale_negative_on_identity_gain` reads against `_WRITE_ACL_SURFACES`, so this
+# marker never leaks into that path.
+_CRED_SURFACE_ROUTER = {
+    "ai": "consult attack_router (M5/RAG)",
+}
+
+
 def unmined(g) -> list:
     """Assets I can reach RIGHT NOW and have never examined, oldest first.
 
@@ -206,11 +224,17 @@ def unmined(g) -> list:
                      and n.kind in ("artifact", "cred", "service"))
         if n.exploitation == "acquired" or reachable:
             since = (n.acquired_at if n.acquired_at is not None else n.first_seen)
+            why = ("acquired, never examined" if n.exploitation == "acquired"
+                   else "reachable now, never examined")
+            # A node WITHOUT the marker matches no router row, so `pointer` is None
+            # and `why` is byte-identical to before -- the pointer only ever APPENDS.
+            pointer = _CRED_SURFACE_ROUTER.get((n.props or {}).get("cred_surface"))
+            if pointer:
+                why = f"{why} — {pointer}"
             out.append({"id": n.id, "kind": n.kind, "label": n.label,
                         "age_held": g.seq - since,
                         "acquired_at": since,
-                        "why": "acquired, never examined" if n.exploitation == "acquired"
-                               else "reachable now, never examined"})
+                        "why": why})
     out.sort(key=lambda x: -x["age_held"])
     return out
 
