@@ -177,6 +177,33 @@ def unrealized(g) -> list:
     return out
 
 
+def unranked(g, frm: int = 0) -> list:
+    """Nodes whose validated access is NEW since `frm`, while a crown jewel stands.
+
+    Crown-jewel priority is ranked BY current validated access (see `unrealized`,
+    which sorts crown-first off the frontier), so access gained after the last
+    ranking silently staled it. `frm` is the last-checkpoint seq the api supplies:
+    reckon stores no separate "ranked-at" stamp, so the checkpoint is the proxy for
+    "last reviewed" -- re-ranking and checkpointing are expected to coincide (if
+    they drift, that is the known limit of the proxy, not a bug here).
+
+    Returns the nodes that reached validated access (verified epistemic or a held
+    acquisition) at a seq greater than `frm`. Empty when no crown jewel is declared
+    (nothing to rank) or nothing is newly validated (nothing owed). The api fires
+    the A16 alarm when this is non-empty.
+    """
+    if not any(o.props.get("crown_jewel") for o in g.objectives()):
+        return []
+    out = []
+    for n in g.nodes.values():
+        seqs = [s for s in (n.last_verified, n.acquired_at) if s is not None]
+        new_seq = max(seqs) if seqs else None
+        if new_seq is not None and new_seq > frm:
+            out.append({"id": n.id, "label": n.label, "since": new_seq})
+    out.sort(key=lambda r: (-r["since"], r["id"]))
+    return out
+
+
 # A credential node can carry a structured `cred_surface` marker naming the class
 # of surface it opens. When one is present, `unmined`'s "mine what you hold" push
 # ALSO names the router to consult for that class, so the reader is pointed at HOW

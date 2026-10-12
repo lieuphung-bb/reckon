@@ -12,7 +12,7 @@ from reckon.model import fold, OPERATOR_ID
 from reckon.queries import (frontier, unrealized, unmined, stale, coverage, why,
                          verification_queue, reach, reach_pareto, unswept,
                          blocked_but_unswept, untried, blocked_but_untried,
-                         unentered, stale_negative_on_identity_gain)
+                         unentered, stale_negative_on_identity_gain, unranked)
 
 
 def ev(seq, op, **args):
@@ -715,3 +715,48 @@ class TestUnenteredHost(unittest.TestCase):
     def test_operator_node_is_not_a_host(self):
         rows = unentered(self._bridge())
         self.assertNotIn(OPERATOR_ID, [r["host"] for r in rows])
+
+
+class TestUnrankedCrownJewels(unittest.TestCase):
+    """New validated access landed after the crown jewels were last ranked — the
+    ranking is BY current validated access, so it silently went stale. The
+    analytical-lane overwatch (cerebrate docs/analytical-lane.md) owes a re-rank."""
+
+    def setUp(self):
+        # A crown-jewel objective, and a host that reaches validated access at
+        # seq 3 — i.e. AFTER a notional last-ranking/checkpoint at seq 2.
+        self.g = fold([
+            ev(1, "add_node", id="obj:db", kind="objective", label="exfil DB",
+               props={"crown_jewel": True}),
+            ev(2, "add_node", id="host:a", kind="host", label="a",
+               epistemic="hypothesized"),
+            ev(3, "set_epistemic", id="host:a", state="verified", confidence="A"),
+        ])
+
+    def test_new_access_since_ranking_fires(self):
+        rows = unranked(self.g, 2)          # last ranked at seq 2, access at 3
+        self.assertIn("host:a", [r["id"] for r in rows])
+
+    def test_nothing_new_since_ranking_is_silent(self):
+        # ranking/checkpoint happened at seq 3, same instant access landed —
+        # nothing is newer than the ranking, so nothing is owed.
+        self.assertEqual(unranked(self.g, 3), [])
+
+    def test_no_crown_jewel_is_silent(self):
+        # same graph without a crown jewel: there is no ranking to stale.
+        g2 = fold([
+            ev(1, "add_node", id="obj:db", kind="objective", label="exfil DB"),
+            ev(2, "add_node", id="host:a", kind="host", label="a",
+               epistemic="hypothesized"),
+            ev(3, "set_epistemic", id="host:a", state="verified", confidence="A"),
+        ])
+        self.assertEqual(unranked(g2, 2), [])
+
+    def test_acquisition_counts_as_validated_access(self):
+        # a credential newly ACQUIRED (held) after the ranking is new validated
+        # access too, not only a verified epistemic transition.
+        g2 = fold(self.g.events + [
+            ev(4, "add_node", id="cred:k", kind="cred", label="key"),
+            ev(5, "set_exploitation", id="cred:k", state="acquired"),
+        ])
+        self.assertIn("cred:k", [r["id"] for r in unranked(g2, 2)])

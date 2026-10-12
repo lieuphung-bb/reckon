@@ -24,7 +24,7 @@ from .queries import (frontier, unrealized, unmined, stale, coverage, why, unrec
                       blocked_but_unswept, untried, blocked_but_untried,
                       unentered, unexercised_reachable_service,
                       stale_negative_on_identity_gain, hostless_address,
-                      delta as _delta, DEFAULT_BUDGET)
+                      unranked, delta as _delta, DEFAULT_BUDGET)
 from . import recall as _recall
 
 OBJECTIVE_STATUS = ("open", "achieved", "blocked")
@@ -922,6 +922,14 @@ ALARM_REGISTRY = (
     ("A15", "host-without-address", RECORDING, True,
      "a host node carries its IP in no field -- nothing to dedup on, so the same "
      "host forks into parallel nodes"),
+    # A16 is the analytical-lane overwatch alarm (cerebrate docs/analytical-lane.md):
+    # new validated access landed since the last checkpoint while crown jewels are
+    # declared, so the crown-jewel ranking -- which is BY current validated access --
+    # owes a refresh. Checkpoint-relative like A2/A5; the checkpoint seq is a PROXY
+    # for "last ranked" (reckon stores no ranking stamp).
+    ("A16", "unranked-crown-jewels", ENGAGEMENT, True,
+     "new validated access since the last checkpoint while crown jewels stand -- "
+     "the ranking may be stale, re-rank on current validated access"),
 )
 
 DARK_ALARMS = tuple(a for a in ALARM_REGISTRY if not a[3])
@@ -1065,6 +1073,20 @@ def alarms(name, since: int | None = None) -> list:
             "why": "no decision recorded since the last checkpoint — a "
                    "decision point probably passed unrecorded",
             "detail": {"since": frm}})
+
+    # A16: new validated access since the checkpoint while crown jewels stand, so
+    # the crown-jewel ranking owes a refresh (analytical-lane overwatch). Keyed on
+    # `frm` like A2/A5 -- the checkpoint is the proxy for "last ranked".
+    newly_validated = unranked(g, frm)
+    if newly_validated:
+        out.append({
+            "id": "A16", "name": "unranked-crown-jewels", "group": ENGAGEMENT,
+            "severity": "info",
+            "why": f"{len(newly_validated)} node(s) reached validated access since "
+                   "the last checkpoint while crown jewels stand — re-rank crown "
+                   "jewels on current validated access",
+            "detail": {"since": frm,
+                       "newly_validated": [n["id"] for n in newly_validated][:20]}})
 
     outstanding = [asdict(c) for c in g.changes if not c.cleaned]
     if outstanding:
